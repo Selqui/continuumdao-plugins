@@ -1,0 +1,45 @@
+{
+  "name": "trade-bot-macd-uniswap",
+  "version": "v1.1.3",
+  "description": "Watches a token's MACD (12/26/9) and, on a bullish cross below the zero line after a pullback, returns an unsigned UniswapV4 quote to buy the token with USDC, and on a bearish cross above zero returns an unsigned sell quote. It also replays the same rules over the fetched candles as a backtest, showing a balance time series and percent P&L.",
+  "skills": [
+    "skills/trade-bot-macd-uniswap"
+  ],
+  "prompts": [
+    "prompts/trade-bot-macd-uniswap.md"
+  ],
+  "entrypoint": "extension/index.js",
+  "permissions": [
+    "user_folder:read",
+    "user_folder:write",
+    "net:https"
+  ],
+  "defiModules": [
+    "protocols/evm/uniswap-v4"
+  ],
+  "marketModules": [
+    "ta",
+    "ohlcv"
+  ],
+  "variables": [
+    "UNISWAP_API_KEY",
+    "THE_GRAPH_API_KEY"
+  ],
+  "secrets": [
+    {
+      "variable": "UNISWAP_API_KEY",
+      "field": "uniswapApiKey",
+      "exports": [
+        "uniswapTradeQuote",
+        "uniswapCreateSwap"
+      ]
+    },
+    {
+      "variable": "THE_GRAPH_API_KEY",
+      "field": "theGraphApiKey",
+      "exports": [
+        "uniswapV4FetchOhlcv"
+      ]
+    }
+  ]
+}
