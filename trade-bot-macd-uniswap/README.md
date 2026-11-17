@@ -1,6 +1,6 @@
 # trade-bot-macd-uniswap
 
-MACD 12/26/9 pullback entries for a ContinuumDAO MPA Wallet node. Version **v1.1.3**.
+MACD 12/26/9 pullback entries for a ContinuumDAO MPA Wallet node. Version **v1.0.0**.
 
 On a bullish cross below the zero line, after the MACD line has stayed below zero for at least `pullbackBars` bars (default 2), the plugin prepares a buy of the token with USDC on Uniswap V4. On a bearish cross above the zero line, after the same number of bars above zero, it prepares a sell of the token for USDC.
 

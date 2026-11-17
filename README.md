@@ -19,7 +19,7 @@ This repository holds plugins for a ContinuumDAO Multi-Party Agent (MPA) Wallet 
 
 | Directory | What it does |
 |---|---|
-| [`trade-bot-macd-uniswap`](trade-bot-macd-uniswap/) | MACD 12/26/9 pullback entries on Uniswap V4, bought and sold with USDC. v1.1.3. |
+| [`trade-bot-macd-uniswap`](trade-bot-macd-uniswap/) | MACD 12/26/9 pullback entries on Uniswap V4, bought and sold with USDC. v1.0.0. |
 
 ## Install on a node
 

@@ -1,7 +1,8 @@
 {
   "name": "trade-bot-macd-uniswap",
-  "version": "v1.1.3",
-  "description": "Watches a token's MACD (12/26/9) and, on a bullish cross below the zero line after a pullback, returns an unsigned UniswapV4 quote to buy the token with USDC, and on a bearish cross above zero returns an unsigned sell quote. It also replays the same rules over the fetched candles as a backtest, showing a balance time series and percent P&L.",
+  "version": "v1.0.0",
+  "versionDate": "2026-11-17",
+  "description": "Watches a token's MACD (12/26/9) and, on a bullish cross below the zero line after a pullback, returns an unsigned UniswapV4 quote to buy the token with USDC, and on a bearish cross above zero returns an unsigned sell quote. It also replays the same rules over the fetched candles as a backtest, showing a balance time series and percent P\u0026L.",
   "skills": [
     "skills/trade-bot-macd-uniswap"
   ],
@@ -10,20 +11,20 @@
   ],
   "entrypoint": "extension/index.js",
   "permissions": [
+    "net:https",
     "user_folder:read",
-    "user_folder:write",
-    "net:https"
+    "user_folder:write"
   ],
   "defiModules": [
     "protocols/evm/uniswap-v4"
   ],
   "marketModules": [
-    "ta",
-    "ohlcv"
+    "ohlcv",
+    "ta"
   ],
   "variables": [
-    "UNISWAP_API_KEY",
-    "THE_GRAPH_API_KEY"
+    "THE_GRAPH_API_KEY",
+    "UNISWAP_API_KEY"
   ],
   "secrets": [
     {
@@ -41,5 +42,9 @@
         "uniswapV4FetchOhlcv"
       ]
     }
-  ]
+  ],
+  "nodeKey": "22c8d11c6a78c22a254247c51d4f7ddac6da216811c4fe3128038e86d4f0ed8b4d9636b4b54f54e0496e37c6464f53099bd9f8c9f3ada4dce5a0404f69e7a1db",
+  "veCtmId": "67",
+  "groupId": "a17009b66452599a01bd132a87181253c57306718580081b2c73020f551e8dd6",
+  "keyGenAddress": "0x27d3d9C5aDB1d61C14CB72189401193CE738b034"
 }
