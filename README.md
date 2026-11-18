@@ -20,6 +20,7 @@ This repository holds plugins for a ContinuumDAO Multi-Party Agent (MPA) Wallet 
 | Directory | What it does |
 |---|---|
 | [`trade-bot-macd-uniswap`](trade-bot-macd-uniswap/) | MACD 12/26/9 pullback entries on Uniswap V4, bought and sold with USDC. v1.0.0. |
+| [`postman`](postman/) | Skill and slash prompt for the catalog Postman MCP server. Draft 0.1.0, not yet published. |
 
 ## Install on a node
 

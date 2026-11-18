@@ -1,0 +1,14 @@
+{
+  "name": "postman",
+  "version": "0.1.0",
+  "description": "Guides the agent through the Postman MCP server for workspaces, collections, specs, mocks, monitors, and flows. The API key stays in the POSTMAN_API_KEY Variable on that server.",
+  "skills": [
+    "skills/postman"
+  ],
+  "prompts": [
+    "prompts/postman.md"
+  ],
+  "permissions": [
+    "user_folder:read"
+  ]
+}
