@@ -1,0 +1,9 @@
+{
+  "name": "kairos-fixed-rate-borrow",
+  "version": "0.1.0",
+  "description": "Quotes Kairos fixed-rate USDC and USDT borrows on Aave V3 (Ethereum) by term, including the protocol fee, utilization fee, risk premium, and early-exit penalty. Opens the loan, locks an existing Aave borrow, repays Aave, and closes the Kairos swap. Each write returns one group sign request.",
+  "skills": ["skills/kairos-fixed-rate-borrow"],
+  "prompts": ["prompts/kairos-fixed-rate-borrow.md"],
+  "entrypoint": "extension/index.js",
+  "permissions": ["net:https", "user_folder:read"]
+}
