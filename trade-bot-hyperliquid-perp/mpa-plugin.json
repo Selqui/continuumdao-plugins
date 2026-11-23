@@ -1,0 +1,11 @@
+{
+  "name": "trade-bot-hyperliquid-perp",
+  "version": "0.1.0",
+  "description": "Decides a Hyperliquid perpetual from a market name, candle interval, candle count, and one technical-analysis type. A contract address is rejected, and the name does not have to be a saved asset. A clear idea returns an unsigned open or close payload; the same direction, no clear idea, or a failed momentum or candlestick confirmation does nothing. Dry-run and backtest do not use real USDC.",
+  "skills": ["skills/trade-bot-hyperliquid-perp"],
+  "prompts": ["prompts/trade-bot-hyperliquid-perp.md"],
+  "entrypoint": "extension/index.js",
+  "permissions": ["net:https"],
+  "defiModules": ["protocols/evm/hyperliquid"],
+  "marketModules": ["ohlcv", "ta", "trade-ideas", "chart"]
+}
