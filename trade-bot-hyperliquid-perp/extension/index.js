@@ -28,21 +28,21 @@ const ANALYSIS_TYPES = [
 ]
 
 const ANALYSIS_LOAD = {
-  trend_structure: ['chart/analysis/analyze-tools', 'analyzeTrendStructure', 'analyze_trend_structure'],
-  elliott_waves: ['chart/analysis/elliott-waves-analyze-tools', 'analyzeElliottWavesTool', 'analyze_elliott_waves'],
-  key_levels: ['chart/analysis/analyze-tools', 'analyzeKeyLevels', 'analyze_key_levels'],
-  key_level_fibonacci: ['chart/analysis/analyze-tools', 'analyzeKeyLevelFibonacci', 'analyze_key_level_fibonacci'],
-  divergence: ['chart/analysis/divergence-analyze-tools', 'analyzeDivergence', 'analyze_divergence'],
-  range_volatility: ['chart/analysis/analyze-tools', 'analyzeRangeVolatility', 'analyze_range_volatility'],
-  bollinger_bands: ['chart/analysis/bollinger-analyze-tools', 'analyzeBollingerBands', 'analyze_bollinger_bands'],
-  donchian_breakout: ['chart/analysis/donchian-analyze-tools', 'analyzeDonchianBreakout', 'analyze_donchian_breakout'],
-  supertrend: ['chart/analysis/supertrend-analyze-tools', 'analyzeSupertrend', 'analyze_supertrend'],
-  ichimoku: ['chart/analysis/ichimoku-analyze-tools', 'analyzeIchimoku', 'analyze_ichimoku'],
-  z_score: ['chart/analysis/z-score-analyze-tools', 'analyzeZScore', 'analyze_z_score'],
-  moving_averages: ['chart/analysis/moving-averages-analyze-tools', 'analyzeMovingAverages', 'analyze_moving_averages'],
-  chart_patterns: ['chart/analysis/chart-patterns-tools', 'analyzeChartPatterns', 'analyze_chart_patterns'],
-  momentum: ['chart/analysis/analyze-tools', 'analyzeMomentum', 'analyze_momentum'],
-  candlestick_patterns: ['chart/analysis/candlestick-patterns-tools', 'analyzeCandlestickPatterns', 'analyze_candlestick_patterns'],
+  trend_structure: ['chart/analysis/analyze-tools.js', 'analyzeTrendStructure', 'analyze_trend_structure'],
+  elliott_waves: ['chart/analysis/elliott-waves-analyze-tools.js', 'analyzeElliottWavesTool', 'analyze_elliott_waves'],
+  key_levels: ['chart/analysis/analyze-tools.js', 'analyzeKeyLevels', 'analyze_key_levels'],
+  key_level_fibonacci: ['chart/analysis/analyze-tools.js', 'analyzeKeyLevelFibonacci', 'analyze_key_level_fibonacci'],
+  divergence: ['chart/analysis/divergence-analyze-tools.js', 'analyzeDivergence', 'analyze_divergence'],
+  range_volatility: ['chart/analysis/analyze-tools.js', 'analyzeRangeVolatility', 'analyze_range_volatility'],
+  bollinger_bands: ['chart/analysis/bollinger-analyze-tools.js', 'analyzeBollingerBands', 'analyze_bollinger_bands'],
+  donchian_breakout: ['chart/analysis/donchian-analyze-tools.js', 'analyzeDonchianBreakout', 'analyze_donchian_breakout'],
+  supertrend: ['chart/analysis/supertrend-analyze-tools.js', 'analyzeSupertrend', 'analyze_supertrend'],
+  ichimoku: ['chart/analysis/ichimoku-analyze-tools.js', 'analyzeIchimoku', 'analyze_ichimoku'],
+  z_score: ['chart/analysis/z-score-analyze-tools.js', 'analyzeZScore', 'analyze_z_score'],
+  moving_averages: ['chart/analysis/moving-averages-analyze-tools.js', 'analyzeMovingAverages', 'analyze_moving_averages'],
+  chart_patterns: ['chart/analysis/chart-patterns-tools.js', 'analyzeChartPatterns', 'analyze_chart_patterns'],
+  momentum: ['chart/analysis/analyze-tools.js', 'analyzeMomentum', 'analyze_momentum'],
+  candlestick_patterns: ['chart/analysis/candlestick-patterns-tools.js', 'analyzeCandlestickPatterns', 'analyze_candlestick_patterns'],
 }
 
 const INTERVAL_HOURS = {
@@ -178,7 +178,7 @@ export default async function plugin(pi) {
 
   pi.registerTool({
     name: 'perp_trade_decision',
-    description: 'Decide a Hyperliquid perpetual from a market name and one technical-analysis type. Returns an unsigned open or close payload, or does nothing.',
+    description: 'Decide a Hyperliquid perpetual from a market name and one technical-analysis type. Candlestick and the other types run inside this tool, including the candlestick switch. Returns an unsigned open or close payload, a backtest, or does nothing. Does not draw a chart.',
     parameters: {
       asset: { type: 'string', description: 'Hyperliquid market name, such as BTC. A contract address is rejected.' },
       interval: { type: 'string', description: 'Candle interval, such as 4h.' },

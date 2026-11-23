@@ -3,7 +3,9 @@ description: Hyperliquid perpetual decision from a market name and one analysis 
 argument-hint: <market> <interval> <candles> <analysisType> [dry-run|backtest|live] [momentum] [candlestick] [percent]
 ---
 
-Load the `trade-bot-hyperliquid-perp` skill, then call `perp_trade_decision`.
+Load the `trade-bot-hyperliquid-perp` skill, then call `perp_trade_decision` once.
+
+The plugin runs candlestick analysis and the other analysis types in its own library call. Do not call `analyze_candlestick_patterns` or any other `analyze_*` chart tool in this turn. Do not draw a chart from this result. A later message that asks for a chart still uses the interactive analysis tools.
 
 - Market name: ${1:-}
 - Candle interval: ${2:-4h}
