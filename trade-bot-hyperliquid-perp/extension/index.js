@@ -148,6 +148,112 @@ function isClearSide(idea) {
   return Boolean(idea) && idea.status === 'clear' && (idea.side === 'long' || idea.side === 'short')
 }
 
+function levelPrice(level) {
+  const px = level && num(level.price)
+  return px != null && px > 0 ? px : null
+}
+
+function ideaEntryPrice(idea) {
+  return levelPrice(idea && idea.entry)
+}
+
+export function barIncludesPrice(bar, price) {
+  if (!bar || !(price > 0) || bar.low == null || bar.high == null) return false
+  return bar.low <= price && price <= bar.high
+}
+
+export function protectiveLevels(side, entry, idea) {
+  const invalidation = levelPrice(idea && idea.invalidation)
+  const target = levelPrice(idea && idea.target)
+  if (side === 'long') {
+    return {
+      invalidation: invalidation != null && invalidation < entry ? invalidation : null,
+      target: target != null && target > entry ? target : null,
+    }
+  }
+  if (side === 'short') {
+    return {
+      invalidation: invalidation != null && invalidation > entry ? invalidation : null,
+      target: target != null && target < entry ? target : null,
+    }
+  }
+  return { invalidation: null, target: null }
+}
+
+// A bar that trades through the open idea's invalidation, target, or liquidation
+// fills at that level, including when the print goes past it. If more than one
+// is inside the bar, the level closer to the open is first. An equal distance
+// fills at the worse price.
+export function levelExitPrice(side, levels, bar) {
+  if (!levels || !bar || (side !== 'long' && side !== 'short')) return null
+  const open = bar.open != null ? bar.open : bar.close
+  if (open == null) return null
+  const hits = []
+  const stop = levels.invalidation
+  const target = levels.target
+  const liquidation = levels.liquidation
+  if (side === 'long') {
+    if (stop != null && bar.low != null && bar.low <= stop) hits.push(stop)
+    if (target != null && bar.high != null && bar.high >= target) hits.push(target)
+    if (liquidation != null && bar.low != null && bar.low <= liquidation) hits.push(liquidation)
+  } else {
+    if (stop != null && bar.high != null && bar.high >= stop) hits.push(stop)
+    if (target != null && bar.low != null && bar.low <= target) hits.push(target)
+    if (liquidation != null && bar.high != null && bar.high >= liquidation) hits.push(liquidation)
+  }
+  let best = null
+  let bestDist = Infinity
+  for (const px of hits) {
+    const dist = Math.abs(open - px)
+    const adverse = best != null && dist === bestDist && (side === 'long' ? px < best : px > best)
+    if (best == null || dist < bestDist || adverse) {
+      best = px
+      bestDist = dist
+    }
+  }
+  return best
+}
+
+// Hyperliquid: opening margin is notional / leverage, and collateral left over
+// must cover 10% of notional (transfer_margin_required = max(initial margin, 0.1 * notional)).
+// That caps notional at account * leverage / (1 + 0.1 * leverage). `percent` takes that fraction.
+const HYPERLIQUID_COLLATERAL_RESERVE = 0.1
+
+export function tradableNotional(accountValue, percent, leverage) {
+  if (!(accountValue > 0) || !(leverage >= 1) || !(percent > 0)) return 0
+  const maxNotional = accountValue * leverage / (1 + HYPERLIQUID_COLLATERAL_RESERVE * leverage)
+  return maxNotional * (percent / 100)
+}
+
+export function liquidationPrice(side, entry, leverage) {
+  if (!(entry > 0) || !(leverage >= 1)) return null
+  if (side === 'long') return entry * (1 - 1 / leverage)
+  if (side === 'short') return entry * (1 + 1 / leverage)
+  return null
+}
+
+export function parseLeverageLabel(label) {
+  const match = String(label || '').match(/(\d+(?:\.\d+)?)x/i)
+  const leverage = match ? Number(match[1]) : null
+  return leverage != null && leverage >= 1 ? leverage : null
+}
+
+export function closePaperPosition(book, exitPrice) {
+  const pnl = book.position === 'long'
+    ? (exitPrice - book.entry) * book.qty
+    : (book.entry - exitPrice) * book.qty
+  const margin = book.margin != null ? book.margin : book.qty * book.entry
+  return {
+    usdc: book.usdc + margin + pnl,
+    qty: 0,
+    entry: 0,
+    margin: 0,
+    position: null,
+    levels: null,
+    openedAt: -1,
+  }
+}
+
 function confirms(idea, side) {
   return isClearSide(idea) && idea.side === side
 }
@@ -185,8 +291,8 @@ export default async function plugin(pi) {
       candleCount: { type: 'number', description: 'Number of candles to keep.' },
       analysisType: { type: 'string', description: 'Library analysis id, underscores, no hyphens.' },
       mode: { type: 'string', description: 'dry-run, backtest, or live.' },
-      momentum: { type: 'boolean', description: 'When true, require a clear momentum idea on the same side.' },
-      candlestick: { type: 'boolean', description: 'When true, require a clear candlestick idea on the same side.' },
+      momentum: { type: 'boolean', description: 'When true, an open requires a clear momentum idea on the same side. A close does not.' },
+      candlestick: { type: 'boolean', description: 'When true, an open requires a clear candlestick idea on the same side. A close does not.' },
       analysisSettings: { type: 'object', description: 'Periods and entry settings for the named type. Passed in by the caller.' },
       lookbackDays: { type: 'number' },
       percent: { type: 'number' },
@@ -239,6 +345,9 @@ export default async function plugin(pi) {
         return { error: `Hyperliquid returned ${candles.length} candles; candleCount is ${candleCount}.` }
       }
 
+      const leverageRead = await readKeyGenLeverage(pi, hl, chainId, market)
+      if (leverageRead.error) return { error: leverageRead.error }
+
       if (mode === 'backtest') {
         return backtest({
           pi,
@@ -252,6 +361,7 @@ export default async function plugin(pi) {
           interval,
           candleCount,
           percent,
+          leverage: leverageRead.leverage,
           szDecimals: resolved.szDecimals,
           initialBalanceUsdc: args.initialBalanceUsdc || '1000',
           maxSeriesPoints: Number(args.maxSeriesPoints) > 0 ? Math.floor(Number(args.maxSeriesPoints)) : 400,
@@ -280,9 +390,13 @@ export default async function plugin(pi) {
         : last && last.close
       let payload = {}
       if ((decision.decision === 'open' || decision.decision === 'close') && price) {
-        const notional = (book.paperUsdc * percent) / 100
-        if (mode === 'live' && decision.decision === 'open' && notional > book.paperUsdc) {
-          return { error: 'The KeyGen spot USDC balance is below the sized order.' }
+        const collateral = mode === 'live' ? leverageRead.accountValue : book.paperUsdc
+        const notional = tradableNotional(collateral, percent, leverageRead.leverage)
+        if (mode === 'live' && decision.decision === 'open' && !(collateral > 0)) {
+          return { error: 'The KeyGen perp account has no collateral for this order.' }
+        }
+        if (mode === 'live' && decision.decision === 'open' && notional / leverageRead.leverage > collateral) {
+          return { error: 'The KeyGen perp collateral is below the sized order.' }
         }
         const size = decision.decision === 'close' && book.positionSize
           ? book.positionSize
@@ -297,6 +411,7 @@ export default async function plugin(pi) {
         candleCount: candles.length,
         analysisType,
         analysisSettings: settings,
+        leverage: leverageRead.leverage,
         balanceRead: book.balanceRead,
         side: decision.side || null,
         confidence: decision.idea ? decision.idea.confidence : null,
@@ -305,6 +420,28 @@ export default async function plugin(pi) {
       }
     },
   })
+}
+
+async function readKeyGenLeverage(pi, hl, chainId, market) {
+  let address = ''
+  try {
+    address = pi.preferredKeyGenAddress()
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) }
+  }
+  const fetched = await hl.hyperliquidFetchOpenMarketContext({
+    chainId,
+    executorAddress: String(address).trim(),
+    coin: market,
+  })
+  const context = fetched && fetched.context
+  const label = context && context.activeAsset && context.activeAsset.leverageLabel
+  const leverage = parseLeverageLabel(label)
+  if (leverage == null) {
+    return { error: 'Hyperliquid did not return leverage for this KeyGen and market.' }
+  }
+  const accountValue = num(context && context.account && context.account.accountValueUsd) || 0
+  return { leverage, accountValue }
 }
 
 async function readBook(pi, hl, chainId, market, mode) {
@@ -341,20 +478,19 @@ async function decide(input) {
     return { decision: 'nothing', reason: 'No clear trade idea.', idea, side: null }
   }
   const side = idea.side
-  let momentumOk = !input.momentumOn
-  if (input.momentumOn) {
+  if (!input.position && input.momentumOn) {
     const momentum = await confirmationIdea(input, 'momentum')
     if (momentum.error) return { error: momentum.error }
-    momentumOk = confirms(momentum.idea, side)
+    if (!confirms(momentum.idea, side)) {
+      return { decision: 'nothing', reason: 'Momentum is on and does not confirm the open.', idea, side }
+    }
   }
-  let candleOk = !input.candlestickOn
-  if (input.candlestickOn) {
+  if (!input.position && input.candlestickOn) {
     const candles = await confirmationIdea(input, 'candlestick_patterns')
     if (candles.error) return { error: candles.error }
-    candleOk = confirms(candles.idea, side)
-  }
-  if (!momentumOk || !candleOk) {
-    return { decision: 'nothing', reason: 'A confirmation switch is on and does not confirm. No open and no close.', idea, side }
+    if (!confirms(candles.idea, side)) {
+      return { decision: 'nothing', reason: 'Candlestick is on and does not confirm the open.', idea, side }
+    }
   }
   if (!input.position) {
     return { decision: 'open', reason: 'No open perpetual and a clear idea.', idea, side }
@@ -367,17 +503,35 @@ async function decide(input) {
 
 async function backtest(input) {
   const initial = num(input.initialBalanceUsdc) || 1000
+  const leverage = input.leverage >= 1 ? input.leverage : 1
   let usdc = initial
   let position = null
   let qty = 0
   let entry = 0
+  let margin = 0
+  let levels = null
+  let openedAt = -1
   const balanceSeries = []
   const rows = candleRows(input.candles)
   const minBars = Math.min(40, Math.max(10, Math.floor(rows.length / 5)))
   for (let i = minBars; i < input.candles.length; i += 1) {
     const slice = input.candles.slice(0, i + 1)
     const primary = await runAnalysis(input.pi, input.ideas, input.analysisType, slice, input.settings)
-    const price = rows[i] && rows[i].close
+    const bar = rows[i]
+    const price = bar && bar.close
+    if (position && qty > 0 && i > openedAt) {
+      const exitPrice = levelExitPrice(position, levels, bar)
+      if (exitPrice != null) {
+        const closed = closePaperPosition({ usdc, qty, entry, margin, position, levels, openedAt }, exitPrice)
+        usdc = closed.usdc
+        qty = closed.qty
+        entry = closed.entry
+        margin = closed.margin
+        position = closed.position
+        levels = closed.levels
+        openedAt = closed.openedAt
+      }
+    }
     if (!primary.error && price) {
       const decision = await decide({
         ...input,
@@ -386,21 +540,34 @@ async function backtest(input) {
         position,
       })
       if (decision.decision === 'open' && !position) {
-        const notional = (usdc * input.percent) / 100
-        qty = price > 0 ? notional / price : 0
-        usdc -= notional
-        entry = price
-        position = decision.side
+        const fill = ideaEntryPrice(decision.idea)
+        if (barIncludesPrice(bar, fill)) {
+          const notional = tradableNotional(usdc, input.percent, leverage)
+          margin = leverage > 0 ? notional / leverage : 0
+          qty = notional / fill
+          usdc -= margin
+          entry = fill
+          position = decision.side
+          levels = protectiveLevels(decision.side, fill, decision.idea)
+          levels.liquidation = liquidationPrice(decision.side, fill, leverage)
+          openedAt = i
+        }
       } else if (decision.decision === 'close' && position && qty > 0) {
-        const pnl = position === 'long' ? (price - entry) * qty : (entry - price) * qty
-        usdc += qty * entry + pnl
-        qty = 0
-        entry = 0
-        position = null
+        const closed = closePaperPosition({ usdc, qty, entry, margin, position, levels, openedAt }, price)
+        usdc = closed.usdc
+        qty = closed.qty
+        entry = closed.entry
+        margin = closed.margin
+        position = closed.position
+        levels = closed.levels
+        openedAt = closed.openedAt
       }
     }
     const mark = price || entry
-    const equity = usdc + (position && qty ? qty * (position === 'long' ? mark : (2 * entry - mark)) : 0)
+    const pnl = position && qty && mark
+      ? (position === 'long' ? (mark - entry) * qty : (entry - mark) * qty)
+      : 0
+    const equity = usdc + (position && qty ? margin + pnl : 0)
     balanceSeries.push(Number(equity.toFixed(6)))
   }
   const capped = downsample(balanceSeries, input.maxSeriesPoints)
@@ -411,6 +578,7 @@ async function backtest(input) {
     candleCount: input.candleCount,
     analysisType: input.analysisType,
     analysisSettings: input.settings,
+    leverage,
     balanceRead: false,
     initialBalanceUsdc: String(input.initialBalanceUsdc || initial),
     balanceSeries: capped,

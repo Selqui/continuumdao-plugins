@@ -5,7 +5,7 @@ States shown: Live. Solid lines: data flows today.
 Blocks, left to right:
 - Caller arguments: Market name (e.g. BTC); Contract address (rejected); Need not be a saved asset (this node or any chain); Interval; Candle count; analysisType id (one of fifteen); Mode (dry-run / backtest / live); momentum switch (optional, default off); candlestick switch (optional, default off)
 - Resolve and analyse: Search the live perp list; Starts with 0x: error, pass the name; Unknown or ambiguous: fail with candidates; Fetch Hyperliquid OHLCV; Run the named analysisType; Read the strong PRIMARY idea
-- Switch gate: momentum on: idea same side and clear; candlestick on: idea same side and clear; Both on: both must confirm; On and not confirming (do nothing, including no close)
+- Switch gate: momentum on and candlestick on each require a same-side clear idea only to open; a close does not use either switch
 - Decision: No position + strong PRIMARY: open; Same direction: do nothing; Opposite direction: close; No clear idea: do nothing
 Lines:
 - Caller arguments -&gt; Resolve and analyse

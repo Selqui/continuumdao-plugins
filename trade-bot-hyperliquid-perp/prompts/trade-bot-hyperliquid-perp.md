@@ -17,7 +17,7 @@ The market name is a Hyperliquid name such as `BTC`. If it is empty, stop and as
 
 The analysis type must be one of the fifteen ids in the skill. If it is empty, stop and ask which id to use. Do not offer liquidity depth or a time-series analysis.
 
-Before the call, read Host YAML `trade-desk.yaml` and pass that type's periods and entry settings as `analysisSettings`. Do not invent those numbers. Tell the user that editing `trade-desk.yaml` on the Skills catalogue changes later runs.
+Before the call, read `/app/agent_llm_config/trade-desk.yaml` with the one grep in the skill and pass those periods and entry settings as `analysisSettings`. Do not cat the file and do not invent those numbers. Tell the user that editing `trade-desk.yaml` changes later runs.
 
 Read the remainder from the left.
 
