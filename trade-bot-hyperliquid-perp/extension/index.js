@@ -163,6 +163,19 @@ export function barIncludesPrice(bar, price) {
   return bar.low <= price && price <= bar.high
 }
 
+const CLEAR_ENTRY_MISSED = 'Clear idea, entry not inside the bar.'
+const SKIPPED_REASON_LIMIT = 5
+
+export function skippedSummary(bars, analysisErrors, analysisError, reasonCounts) {
+  const reasons = [...reasonCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
+    .slice(0, SKIPPED_REASON_LIMIT)
+    .map(([reason, count]) => ({ count, reason }))
+  const skipped = { bars, analysisErrors, reasons }
+  if (analysisError) skipped.analysisError = analysisError
+  return skipped
+}
+
 export function protectiveLevels(side, entry, idea) {
   const invalidation = levelPrice(idea && idea.invalidation)
   const target = levelPrice(idea && idea.target)
@@ -300,7 +313,7 @@ export default async function plugin(pi) {
 
   pi.registerTool({
     name: 'perp_trade_decision',
-    description: 'Decide a Hyperliquid perpetual from a market name and one technical-analysis type. Candlestick and the other types run inside this tool, including the candlestick switch. Returns an unsigned open or close payload, a backtest with its trade ledger, or does nothing. Does not draw a chart.',
+    description: 'Decide a Hyperliquid perpetual from a market name and one technical-analysis type. Candlestick and the other types run inside this tool, including the candlestick switch. Returns an unsigned open or close payload, a backtest with its trade ledger and skip summary, or does nothing. Does not draw a chart.',
     parameters: {
       asset: { type: 'string', description: 'Hyperliquid market name, such as BTC. A contract address is rejected.' },
       interval: { type: 'string', description: 'Candle interval, such as 4h.' },
@@ -539,8 +552,20 @@ async function backtest(input) {
   const balanceSeries = []
   const ledger = []
   let openFill = null
+  let walked = 0
+  let analysisErrors = 0
+  let analysisError = ''
+  const reasonCounts = new Map()
   const rows = candleRows(input.candles)
   const minBars = Math.min(40, Math.max(10, Math.floor(rows.length / 5)))
+  function noteAnalysisError(reason) {
+    analysisErrors += 1
+    if (!analysisError) analysisError = String(reason || 'Analysis failed.')
+  }
+  function noteSkip(reason) {
+    const text = String(reason || 'No clear trade idea.')
+    reasonCounts.set(text, (reasonCounts.get(text) || 0) + 1)
+  }
   function closeBook(exitPrice, exitTimeMs, reason) {
     const cash = usdc
     const posted = margin
@@ -572,18 +597,24 @@ async function backtest(input) {
     const primary = await runAnalysis(input.pi, input.ideas, input.analysisType, slice, input.settings)
     const bar = rows[i]
     const price = bar && bar.close
+    const flatAtStart = !position
+    walked += 1
     if (position && qty > 0 && i > openedAt) {
       const exitPrice = levelExitPrice(position, levels, bar)
       if (exitPrice != null) closeBook(exitPrice, bar && bar.timestampMs, exitReason(levels, exitPrice) || 'invalidation')
     }
-    if (!primary.error && price) {
+    if (primary.error) {
+      if (flatAtStart) noteAnalysisError(primary.error)
+    } else if (price) {
       const decision = await decide({
         ...input,
         primary: primary.idea,
         candles: slice,
         position,
       })
-      if (decision.decision === 'open' && !position) {
+      if (decision.error) {
+        if (flatAtStart && !position) noteAnalysisError(decision.error)
+      } else if (decision.decision === 'open' && !position) {
         const fill = ideaEntryPrice(decision.idea)
         if (barIncludesPrice(bar, fill)) {
           const notional = tradableNotional(usdc, input.percent, leverage)
@@ -596,9 +627,13 @@ async function backtest(input) {
           levels.liquidation = liquidationPrice(decision.side, fill, leverage)
           openedAt = i
           openFill = { entryTimeMs: bar.timestampMs ?? null }
+        } else if (flatAtStart) {
+          noteSkip(CLEAR_ENTRY_MISSED)
         }
       } else if (decision.decision === 'close' && position && qty > 0) {
         closeBook(price, bar && bar.timestampMs, 'signal')
+      } else if (flatAtStart && !position) {
+        noteSkip((decision.idea && decision.idea.unclearReason) || decision.reason)
       }
     }
     const mark = price || entry
@@ -640,6 +675,7 @@ async function backtest(input) {
     balanceRead: false,
     initialBalanceUsdc: String(input.initialBalanceUsdc || initial),
     ledger,
+    skipped: skippedSummary(walked, analysisErrors, analysisError, reasonCounts),
     balanceSeries: capped,
     finalBalanceUsdc: String(finalBalance),
     finalBalanceRatioPct: initial > 0 ? Number(((finalBalance / initial) * 100).toFixed(4)) : null,
