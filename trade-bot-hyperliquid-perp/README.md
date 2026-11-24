@@ -22,4 +22,4 @@ Candlestick analysis runs inside the plugin, including the `candlestick_patterns
 
 ![Decision matrix](./decision-matrix.svg)
 
-Draft 0.1.0. Not yet published.
+Version **v1.0.0**.

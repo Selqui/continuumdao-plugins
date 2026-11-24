@@ -250,6 +250,10 @@ export function parseLeverageLabel(label) {
   return leverage != null && leverage >= 1 ? leverage : null
 }
 
+export function spotTopUpNotice(market, leverage) {
+  return `Send USDC to the KeyGen spot balance before a live trade. Leverage on ${market} is ${leverage}x. Hyperliquid will not change that leverage until spot USDC has arrived. After the USDC is on spot, ask the agent to change it.`
+}
+
 export function closePaperPosition(book, exitPrice) {
   const pnl = book.position === 'long'
     ? (exitPrice - book.entry) * book.qty
@@ -400,8 +404,15 @@ export default async function plugin(pi) {
       const price = decision.idea && decision.idea.entry && decision.idea.entry.price
         ? decision.idea.entry.price
         : last && last.close
+      const needsSpot = mode === 'live' && !(book.spot > 0)
+      const userNotice = needsSpot ? spotTopUpNotice(market, leverageRead.leverage) : null
+      let liveDecision = decision.decision
+      let liveReason = decision.reason
       let payload = {}
-      if ((decision.decision === 'open' || decision.decision === 'close') && price) {
+      if (needsSpot && decision.decision === 'open') {
+        liveDecision = 'nothing'
+        liveReason = userNotice
+      } else if ((decision.decision === 'open' || decision.decision === 'close') && price) {
         const collateral = mode === 'live' ? leverageRead.accountValue : book.paperUsdc
         const notional = tradableNotional(collateral, percent, leverageRead.leverage)
         if (mode === 'live' && decision.decision === 'open' && !(collateral > 0)) {
@@ -417,14 +428,16 @@ export default async function plugin(pi) {
       }
       return {
         mode,
-        decision: decision.decision,
-        reason: decision.reason,
+        decision: liveDecision,
+        reason: liveReason,
         market,
         candleCount: candles.length,
         analysisType,
         analysisSettings: settings,
         leverage: leverageRead.leverage,
         balanceRead: book.balanceRead,
+        ...(mode === 'live' ? { spotUsdc: String(book.spot) } : {}),
+        ...(userNotice ? { userNotice } : {}),
         side: decision.side || null,
         confidence: decision.idea ? decision.idea.confidence : null,
         position: book.position,
