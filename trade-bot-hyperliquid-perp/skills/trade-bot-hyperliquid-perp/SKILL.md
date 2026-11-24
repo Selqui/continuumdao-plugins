@@ -7,7 +7,7 @@ description: Decide a Hyperliquid perpetual from a market name and one technical
 
 One tool, `perp_trade_decision`. **This plugin never signs and never posts a multi-sign request.** An open or a close returns an unsigned payload. The agent opens the sign request.
 
-Candlestick analysis, and every other accepted type, runs inside this plugin through the market-data library. That includes `analysisType` `candlestick_patterns` and the `candlestick` switch. Call only `perp_trade_decision` for this decision. Do not call `analyze_candlestick_patterns` or any other `analyze_*` chart tool in the same turn, and do not draw a candlestick menu from this result. The plugin returns the decision or the backtest numbers. It does not return a chart highlight.
+Candlestick analysis, and every other accepted type, runs inside this plugin through the market-data library. That includes `analysisType` `candlestick_patterns` and the `candlestick` switch. Call only `perp_trade_decision` for this decision. Do not call `analyze_candlestick_patterns` or any other `analyze_*` chart tool in the same turn, and do not draw a candlestick menu from this result. The plugin returns the decision or the backtest numbers. A backtest includes `ledger`: one row per closed trade, plus a final row when a position is still open. Each row has `side`, `entryPrice`, `exitPrice`, `entryTimeMs`, `exitTimeMs`, `qty`, `margin`, `pnl`, `balanceUsdc`, and `reason` (`invalidation`, `target`, `liquidation`, or `signal`). Report that ledger with the balance. It does not return a chart highlight.
 
 Interactive chart analysis stays available. A later message that asks for a chart, or that names an `analyze_` tool, uses those chart tools as usual.
 

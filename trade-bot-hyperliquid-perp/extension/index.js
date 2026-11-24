@@ -59,6 +59,7 @@ const INTERVAL_HOURS = {
   '1d': 24,
   '3d': 72,
   '1w': 168,
+  '1M': 720,
 }
 
 const loaders = new Map()
@@ -214,6 +215,17 @@ export function levelExitPrice(side, levels, bar) {
   return best
 }
 
+export function exitReason(levels, exitPrice) {
+  if (!levels || !(exitPrice > 0)) return null
+  for (const name of ['invalidation', 'target', 'liquidation']) {
+    const px = levels[name]
+    if (px == null || !(px > 0)) continue
+    const tol = 1e-8 * Math.max(1, Math.abs(px))
+    if (Math.abs(px - exitPrice) <= tol) return name
+  }
+  return null
+}
+
 // Hyperliquid: opening margin is notional / leverage, and collateral left over
 // must cover 10% of notional (transfer_margin_required = max(initial margin, 0.1 * notional)).
 // That caps notional at account * leverage / (1 + 0.1 * leverage). `percent` takes that fraction.
@@ -284,7 +296,7 @@ export default async function plugin(pi) {
 
   pi.registerTool({
     name: 'perp_trade_decision',
-    description: 'Decide a Hyperliquid perpetual from a market name and one technical-analysis type. Candlestick and the other types run inside this tool, including the candlestick switch. Returns an unsigned open or close payload, a backtest, or does nothing. Does not draw a chart.',
+    description: 'Decide a Hyperliquid perpetual from a market name and one technical-analysis type. Candlestick and the other types run inside this tool, including the candlestick switch. Returns an unsigned open or close payload, a backtest with its trade ledger, or does nothing. Does not draw a chart.',
     parameters: {
       asset: { type: 'string', description: 'Hyperliquid market name, such as BTC. A contract address is rejected.' },
       interval: { type: 'string', description: 'Candle interval, such as 4h.' },
@@ -512,8 +524,36 @@ async function backtest(input) {
   let levels = null
   let openedAt = -1
   const balanceSeries = []
+  const ledger = []
+  let openFill = null
   const rows = candleRows(input.candles)
   const minBars = Math.min(40, Math.max(10, Math.floor(rows.length / 5)))
+  function closeBook(exitPrice, exitTimeMs, reason) {
+    const cash = usdc
+    const posted = margin
+    const closed = closePaperPosition({ usdc, qty, entry, margin, position, levels, openedAt }, exitPrice)
+    ledger.push({
+      status: 'closed',
+      side: position,
+      reason,
+      entryPrice: Number(entry.toFixed(6)),
+      exitPrice: Number(exitPrice.toFixed(6)),
+      entryTimeMs: openFill ? openFill.entryTimeMs : null,
+      exitTimeMs: exitTimeMs ?? null,
+      qty: Number(qty.toFixed(8)),
+      margin: Number(posted.toFixed(6)),
+      pnl: Number((closed.usdc - cash - posted).toFixed(6)),
+      balanceUsdc: Number(closed.usdc.toFixed(6)),
+    })
+    usdc = closed.usdc
+    qty = closed.qty
+    entry = closed.entry
+    margin = closed.margin
+    position = closed.position
+    levels = closed.levels
+    openedAt = closed.openedAt
+    openFill = null
+  }
   for (let i = minBars; i < input.candles.length; i += 1) {
     const slice = input.candles.slice(0, i + 1)
     const primary = await runAnalysis(input.pi, input.ideas, input.analysisType, slice, input.settings)
@@ -521,16 +561,7 @@ async function backtest(input) {
     const price = bar && bar.close
     if (position && qty > 0 && i > openedAt) {
       const exitPrice = levelExitPrice(position, levels, bar)
-      if (exitPrice != null) {
-        const closed = closePaperPosition({ usdc, qty, entry, margin, position, levels, openedAt }, exitPrice)
-        usdc = closed.usdc
-        qty = closed.qty
-        entry = closed.entry
-        margin = closed.margin
-        position = closed.position
-        levels = closed.levels
-        openedAt = closed.openedAt
-      }
+      if (exitPrice != null) closeBook(exitPrice, bar && bar.timestampMs, exitReason(levels, exitPrice) || 'invalidation')
     }
     if (!primary.error && price) {
       const decision = await decide({
@@ -551,16 +582,10 @@ async function backtest(input) {
           levels = protectiveLevels(decision.side, fill, decision.idea)
           levels.liquidation = liquidationPrice(decision.side, fill, leverage)
           openedAt = i
+          openFill = { entryTimeMs: bar.timestampMs ?? null }
         }
       } else if (decision.decision === 'close' && position && qty > 0) {
-        const closed = closePaperPosition({ usdc, qty, entry, margin, position, levels, openedAt }, price)
-        usdc = closed.usdc
-        qty = closed.qty
-        entry = closed.entry
-        margin = closed.margin
-        position = closed.position
-        levels = closed.levels
-        openedAt = closed.openedAt
+        closeBook(price, bar && bar.timestampMs, 'signal')
       }
     }
     const mark = price || entry
@@ -569,6 +594,26 @@ async function backtest(input) {
       : 0
     const equity = usdc + (position && qty ? margin + pnl : 0)
     balanceSeries.push(Number(equity.toFixed(6)))
+  }
+  if (position && qty > 0 && openFill) {
+    const last = rows[rows.length - 1]
+    const mark = last && last.close
+    const openPnl = mark
+      ? (position === 'long' ? (mark - entry) * qty : (entry - mark) * qty)
+      : 0
+    ledger.push({
+      status: 'open',
+      side: position,
+      reason: null,
+      entryPrice: Number(entry.toFixed(6)),
+      exitPrice: null,
+      entryTimeMs: openFill.entryTimeMs,
+      exitTimeMs: null,
+      qty: Number(qty.toFixed(8)),
+      margin: Number(margin.toFixed(6)),
+      pnl: Number(openPnl.toFixed(6)),
+      balanceUsdc: Number(usdc.toFixed(6)),
+    })
   }
   const capped = downsample(balanceSeries, input.maxSeriesPoints)
   const finalBalance = capped.length ? capped[capped.length - 1] : initial
@@ -581,6 +626,7 @@ async function backtest(input) {
     leverage,
     balanceRead: false,
     initialBalanceUsdc: String(input.initialBalanceUsdc || initial),
+    ledger,
     balanceSeries: capped,
     finalBalanceUsdc: String(finalBalance),
     finalBalanceRatioPct: initial > 0 ? Number(((finalBalance / initial) * 100).toFixed(4)) : null,
