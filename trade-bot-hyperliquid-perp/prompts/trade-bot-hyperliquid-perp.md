@@ -17,7 +17,7 @@ The market name is a Hyperliquid name such as `BTC`. If it is empty, stop and as
 
 The analysis type must be one of the fifteen ids in the skill. If it is empty, stop and ask which id to use. Do not offer liquidity depth or a time-series analysis.
 
-Before the call, read `/app/agent_llm_config/trade-desk.yaml` with the one grep in the skill. Pass the `universal` lines as `analysisSettings`. Those lines are the shared desk settings and the periods for each analysis type. Do not pass `llmFallback` lines. Do not read `protocol-trade.yaml`. Do not cat the file and do not invent those numbers. Tell the user that editing `trade-desk.yaml` changes later runs.
+Before the call, read `/app/agent_llm_config/trade-desk.yaml` with the one grep in the skill. Pass the `universal` lines and the nine `classicPatterns` lines as `analysisSettings`. Those lines are the shared desk settings, the periods for each analysis type, and the classic-pattern scan settings. Do not pass the `classicPatterns` header, `version`, or `llmFallback` lines. Do not read `protocol-trade.yaml`. Do not cat the file and do not invent those numbers. Tell the user that editing `trade-desk.yaml` changes later runs.
 
 Read the remainder from the left.
 
