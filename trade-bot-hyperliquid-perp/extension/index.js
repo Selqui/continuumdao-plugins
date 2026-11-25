@@ -167,6 +167,18 @@ async function runAnalysis(pi, ideas, analysisType, candles, settings, minConfid
   })
   const pattern = candlestickPatternName(analysis)
   if (pattern && idea && typeof idea === 'object') idea.candlestickPattern = pattern
+  if (
+    analysisType === 'candlestick_patterns' &&
+    idea &&
+    idea.status === 'clear' &&
+    (idea.side === 'long' || idea.side === 'short')
+  ) {
+    const patternId = analysis && analysis.candlestickTradeSetup && analysis.candlestickTradeSetup.patternId
+    const stop = candlestickInvalidation(idea.side, rows, patternId)
+    if (stop != null) {
+      idea.invalidation = { price: stop, label: idea.side === 'long' ? 'Pattern low' : 'Pattern high' }
+    }
+  }
   return { idea, analysis }
 }
 
@@ -175,6 +187,37 @@ function candlestickPatternName(analysis) {
   if (!setup || setup.patternId == null || setup.patternId === 'none') return null
   const name = typeof setup.patternName === 'string' ? setup.patternName.trim() : ''
   return name || null
+}
+
+const CANDLESTICK_PATTERN_BARS = {
+  engulfing: 2,
+  harami: 2,
+  piercing: 2,
+  dark_cloud_cover: 2,
+  morning_star: 3,
+  evening_star: 3,
+  three_white_soldiers: 3,
+  three_black_crows: 3,
+}
+
+export function candlestickInvalidation(side, rows, patternId) {
+  if (side !== 'long' && side !== 'short') return null
+  const span = CANDLESTICK_PATTERN_BARS[patternId] || 1
+  const end = rows.length - 1
+  const start = end - (span - 1)
+  if (start < 0) return null
+  const entry = rows[end] && rows[end].close
+  if (!(entry > 0)) return null
+  let extreme = side === 'long' ? Infinity : -Infinity
+  for (let i = start; i <= end; i += 1) {
+    const bar = rows[i]
+    const px = bar && (side === 'long' ? bar.low : bar.high)
+    if (!(px > 0)) return null
+    extreme = side === 'long' ? Math.min(extreme, px) : Math.max(extreme, px)
+  }
+  if (side === 'long' && extreme < entry) return extreme
+  if (side === 'short' && extreme > entry) return extreme
+  return null
 }
 
 function isClearSide(idea) {
