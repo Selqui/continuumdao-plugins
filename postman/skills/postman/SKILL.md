@@ -1,6 +1,6 @@
 ---
 name: postman
-description: Use the catalog MCP server postman to inspect or change Postman workspaces, collections, specs, mocks, monitors, and flows. Load when the operator asks to work in Postman.
+description: Use the catalog MCP server postman to inspect Postman workspaces, collections, specs, mocks, monitors, and flows. Load when the operator asks to work in Postman. Local files stay under data/postman.
 ---
 
 # Postman
@@ -9,9 +9,11 @@ The tools come from the catalog MCP server `postman`. Load it with `agent_load_m
 
 The server reads Variable `POSTMAN_API_KEY`. The value stays in Variables. Do not ask for it and do not pass it as a tool argument.
 
+Local files for this work live only in `data/postman`. Read and save notes and exports only there. Do not open any other path in the user folder, including plugins, memory, proposals, sources, scripts, or other data directories.
+
 1. Call `getAuthenticatedUser`. If that fails, say the Variable is missing or was rejected, and stop.
 2. Use only tools the connected server actually exposed. Do not invent tool names. Prefer the smallest set that covers the request.
-3. Search for a resource, then fetch the full object, before changing it. A search preview is not enough to replace a collection or to say an API is absent.
+3. Search for a resource, then fetch the full object, before changing it. A search preview is not enough to replace a collection or to say an API is absent. Change a Postman resource only when this message asks for that change.
 4. Report the resource and the tool result. A successful tool call does not by itself mean a mock is public or a monitor run passed.
 
 Do not run a shell.
