@@ -165,7 +165,16 @@ async function runAnalysis(pi, ideas, analysisType, candles, settings, minConfid
     symbol: analysisType,
     protocolId: 'hyperliquid',
   })
+  const pattern = candlestickPatternName(analysis)
+  if (pattern && idea && typeof idea === 'object') idea.candlestickPattern = pattern
   return { idea, analysis }
+}
+
+function candlestickPatternName(analysis) {
+  const setup = analysis && analysis.candlestickTradeSetup
+  if (!setup || setup.patternId == null || setup.patternId === 'none') return null
+  const name = typeof setup.patternName === 'string' ? setup.patternName.trim() : ''
+  return name || null
 }
 
 function isClearSide(idea) {
@@ -556,20 +565,23 @@ async function decide(input) {
       return { decision: 'nothing', reason: 'Momentum is on and does not confirm the open.', idea, side }
     }
   }
+  let confirmingPattern = null
   if (!input.position && input.candlestickOn) {
     const candles = await confirmationIdea(input, 'candlestick_patterns')
     if (candles.error) return { error: candles.error }
     if (!confirms(candles.idea, side)) {
       return { decision: 'nothing', reason: 'Candlestick is on and does not confirm the open.', idea, side }
     }
+    confirmingPattern = candles.idea && candles.idea.candlestickPattern
   }
+  const candlestickPattern = confirmingPattern || idea.candlestickPattern || null
   if (!input.position) {
-    return { decision: 'open', reason: 'No open perpetual and a clear idea.', idea, side }
+    return { decision: 'open', reason: 'No open perpetual and a clear idea.', idea, side, candlestickPattern }
   }
   if (input.position === side) {
     return { decision: 'nothing', reason: 'The open perpetual is already in this direction.', idea, side }
   }
-  return { decision: 'close', reason: 'The open perpetual is in the opposite direction.', idea, side }
+  return { decision: 'close', reason: 'The open perpetual is in the opposite direction.', idea, side, candlestickPattern }
 }
 
 async function backtest(input) {
@@ -599,10 +611,11 @@ async function backtest(input) {
     const text = String(reason || 'No clear trade idea.')
     reasonCounts.set(text, (reasonCounts.get(text) || 0) + 1)
   }
-  function closeBook(exitPrice, exitTimeMs, reason) {
+  function closeBook(exitPrice, exitTimeMs, reason, exitPattern, exitIndex) {
     const cash = usdc
     const posted = margin
     const closed = closePaperPosition({ usdc, qty, entry, margin, position, levels, openedAt }, exitPrice)
+    const entryPattern = openFill && openFill.candlestickPattern
     ledger.push({
       status: 'closed',
       side: position,
@@ -611,10 +624,13 @@ async function backtest(input) {
       exitPrice: Number(exitPrice.toFixed(6)),
       entryTimeMs: openFill ? openFill.entryTimeMs : null,
       exitTimeMs: exitTimeMs ?? null,
+      barsHeld: exitIndex - openedAt,
       qty: Number(qty.toFixed(8)),
       margin: Number(posted.toFixed(6)),
       pnl: Number((closed.usdc - cash - posted).toFixed(6)),
       balanceUsdc: Number(closed.usdc.toFixed(6)),
+      ...(entryPattern ? { candlestickPattern: entryPattern } : {}),
+      ...(exitPattern ? { exitCandlestickPattern: exitPattern } : {}),
     })
     usdc = closed.usdc
     qty = closed.qty
@@ -641,7 +657,7 @@ async function backtest(input) {
     walked += 1
     if (position && qty > 0 && i > openedAt) {
       const exitPrice = levelExitPrice(position, levels, bar)
-      if (exitPrice != null) closeBook(exitPrice, bar && bar.timestampMs, exitReason(levels, exitPrice) || 'invalidation')
+      if (exitPrice != null) closeBook(exitPrice, bar && bar.timestampMs, exitReason(levels, exitPrice) || 'invalidation', null, i)
     }
     if (primary.error) {
       if (flatAtStart) noteAnalysisError(primary.error)
@@ -666,12 +682,15 @@ async function backtest(input) {
           levels = protectiveLevels(decision.side, fill, decision.idea)
           levels.liquidation = liquidationPrice(decision.side, fill, leverage)
           openedAt = i
-          openFill = { entryTimeMs: bar.timestampMs ?? null }
+          openFill = {
+            entryTimeMs: bar.timestampMs ?? null,
+            candlestickPattern: decision.candlestickPattern || null,
+          }
         } else if (flatAtStart) {
           noteSkip(CLEAR_ENTRY_MISSED)
         }
       } else if (decision.decision === 'close' && position && qty > 0) {
-        closeBook(price, bar && bar.timestampMs, 'signal')
+        closeBook(price, bar && bar.timestampMs, 'signal', decision.candlestickPattern, i)
       } else if (flatAtStart && !position) {
         noteSkip((decision.idea && decision.idea.unclearReason) || decision.reason)
       }
@@ -697,10 +716,12 @@ async function backtest(input) {
       exitPrice: null,
       entryTimeMs: openFill.entryTimeMs,
       exitTimeMs: null,
+      barsHeld: rows.length - 1 - openedAt,
       qty: Number(qty.toFixed(8)),
       margin: Number(margin.toFixed(6)),
       pnl: Number(openPnl.toFixed(6)),
       balanceUsdc: Number(usdc.toFixed(6)),
+      ...(openFill.candlestickPattern ? { candlestickPattern: openFill.candlestickPattern } : {}),
     })
   }
   const capped = downsample(balanceSeries, input.maxSeriesPoints)
