@@ -2,7 +2,7 @@
 
 Decides a Hyperliquid perpetual from a market name, a candle window, and one technical-analysis type from the market-data library.
 
-The argument is a Hyperliquid market name such as `BTC`. A contract address is rejected. The name does not have to be saved on the node. Periods, entry settings, key-level touch settings, Fibonacci bracket settings, and classic-pattern scan settings are passed in from Host YAML `trade-desk.yaml` (`universal`, `keyLevels`, `keyLevelFibonacci`, and `classicPatterns`). Position size comes from the `percent` argument. The `momentum` and `candlestick` switches require that confirmation on the same side only before an open. A close does not use either switch. Dry-run and backtest do not use real USDC. The tool returns an unsigned payload. It does not sign and it does not post the multi-sign request.
+The argument is a Hyperliquid market name such as `BTC`. A contract address is rejected. The name does not have to be saved on the node. Periods, entry settings, key-level touch settings, Fibonacci bracket settings, the candlestick hit gate, and classic-pattern scan settings are passed in from Host YAML `trade-desk.yaml` (`universal`, `keyLevels`, `keyLevelFibonacci`, `candlestick.minConfidenceCandles`, and `classicPatterns`). `minConfidenceCandles` defaults to 0.8 when that line is absent. It is used for `candlestick_patterns` and for the `candlestick` switch on every other analysis type. Position size comes from the `percent` argument. The `momentum` and `candlestick` switches require that confirmation on the same side only before an open. A close does not use either switch. Dry-run and backtest do not use real USDC. The tool returns an unsigned payload. It does not sign and it does not post the multi-sign request.
 
 Analysis types: `trend_structure`, `elliott_waves`, `key_levels`, `key_level_fibonacci`, `divergence`, `range_volatility`, `bollinger_bands`, `donchian_breakout`, `supertrend`, `ichimoku`, `z_score`, `moving_averages`, `chart_patterns`, `momentum`, `candlestick_patterns`.
 
@@ -22,4 +22,4 @@ Candlestick analysis runs inside the plugin, including the `candlestick_patterns
 
 ![Decision matrix](./decision-matrix.svg)
 
-Version **v1.0.0**.
+Version **v1.1.0**.

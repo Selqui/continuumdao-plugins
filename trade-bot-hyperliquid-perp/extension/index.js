@@ -77,6 +77,29 @@ function asBool(value) {
   return value === true || value === 'true' || value === 1 || value === '1'
 }
 
+export const DEFAULT_MIN_CONFIDENCE_CANDLES = 0.8
+
+function confidenceInRange(value) {
+  const n = num(value)
+  if (n == null || n < 0 || n > 1) return null
+  return n
+}
+
+export function resolveMinConfidenceCandles(settings) {
+  const fromSettings = settings && confidenceInRange(settings.minConfidenceCandles)
+  if (fromSettings != null) return fromSettings
+  return DEFAULT_MIN_CONFIDENCE_CANDLES
+}
+
+function settingsForAnalysis(analysisType, settings, minConfidenceCandles) {
+  const next = settings && typeof settings === 'object' ? { ...settings } : {}
+  delete next.minConfidenceCandles
+  if (analysisType === 'candlestick_patterns') {
+    next.minConfidence = minConfidenceCandles
+  }
+  return next
+}
+
 function roundTo(value, decimals) {
   const places = Number.isInteger(decimals) && decimals >= 0 ? decimals : 6
   const factor = 10 ** places
@@ -117,7 +140,7 @@ async function loadAnalysis(pi, analysisType) {
   return loaded
 }
 
-async function runAnalysis(pi, ideas, analysisType, candles, settings) {
+async function runAnalysis(pi, ideas, analysisType, candles, settings, minConfidenceCandles) {
   const loaded = await loadAnalysis(pi, analysisType)
   const rows = candleRows(candles)
   const input = {
@@ -125,7 +148,7 @@ async function runAnalysis(pi, ideas, analysisType, candles, settings) {
     rows,
     allowRowsOnly: true,
     mergeLive: false,
-    ...settings,
+    ...settingsForAnalysis(analysisType, settings, minConfidenceCandles),
   }
   let result = await loaded.fn(input)
   for (let attempt = 0; attempt < 8 && result && result.ok === false; attempt += 1) {
@@ -322,7 +345,7 @@ export default async function plugin(pi) {
       mode: { type: 'string', description: 'dry-run, backtest, or live.' },
       momentum: { type: 'boolean', description: 'When true, an open requires a clear momentum idea on the same side. A close does not.' },
       candlestick: { type: 'boolean', description: 'When true, an open requires a clear candlestick idea on the same side. A close does not.' },
-      analysisSettings: { type: 'object', description: 'Periods and entry settings for the named type. Passed in by the caller.' },
+      analysisSettings: { type: 'object', description: 'Periods and entry settings for the named type. Passed in by the caller. minConfidenceCandles from the candlestick desk block is the hit gate for candlestick_patterns and for the candlestick switch. Default 0.8 when that line is absent.' },
       lookbackDays: { type: 'number' },
       percent: { type: 'number' },
       initialBalanceUsdc: { type: 'string' },
@@ -349,6 +372,7 @@ export default async function plugin(pi) {
         return { error: 'mode must be dry-run, backtest, or live.' }
       }
       const settings = args.analysisSettings && typeof args.analysisSettings === 'object' ? { ...args.analysisSettings } : {}
+      const minConfidenceCandles = resolveMinConfidenceCandles(settings)
       const chainId = Number(args.chainId) > 0 ? Number(args.chainId) : CHAIN_ID
       const percent = Number(args.percent) > 0 ? Number(args.percent) : 50
       const momentumOn = asBool(args.momentum)
@@ -384,6 +408,7 @@ export default async function plugin(pi) {
           analysisType,
           candles,
           settings,
+          minConfidenceCandles,
           momentumOn,
           candlestickOn,
           market,
@@ -397,7 +422,7 @@ export default async function plugin(pi) {
         })
       }
 
-      const primary = await runAnalysis(pi, ideas, analysisType, candles, settings)
+      const primary = await runAnalysis(pi, ideas, analysisType, candles, settings, minConfidenceCandles)
       if (primary.error) return { error: primary.error }
       const book = await readBook(pi, hl, chainId, market, mode)
       if (book.error) return { error: book.error }
@@ -408,6 +433,7 @@ export default async function plugin(pi) {
         analysisType,
         candles,
         settings,
+        minConfidenceCandles,
         momentumOn,
         candlestickOn,
         position: book.position,
@@ -507,7 +533,14 @@ async function readBook(pi, hl, chainId, market, mode) {
 
 async function confirmationIdea(input, analysisType) {
   if (input.analysisType === analysisType) return { idea: input.primary }
-  return runAnalysis(input.pi, input.ideas, analysisType, input.candles, input.settings)
+  return runAnalysis(
+    input.pi,
+    input.ideas,
+    analysisType,
+    input.candles,
+    input.settings,
+    input.minConfidenceCandles,
+  )
 }
 
 async function decide(input) {
@@ -594,7 +627,14 @@ async function backtest(input) {
   }
   for (let i = minBars; i < input.candles.length; i += 1) {
     const slice = input.candles.slice(0, i + 1)
-    const primary = await runAnalysis(input.pi, input.ideas, input.analysisType, slice, input.settings)
+    const primary = await runAnalysis(
+      input.pi,
+      input.ideas,
+      input.analysisType,
+      slice,
+      input.settings,
+      input.minConfidenceCandles,
+    )
     const bar = rows[i]
     const price = bar && bar.close
     const flatAtStart = !position
