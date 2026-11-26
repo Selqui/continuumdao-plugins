@@ -342,6 +342,30 @@ export function spotTopUpNotice(market, leverage) {
   return `Send USDC to the KeyGen spot balance before a live trade. Leverage on ${market} is ${leverage}x. Hyperliquid will not change that leverage until spot USDC has arrived. After the USDC is on spot, ask the agent to change it.`
 }
 
+export const INSTANT_SETUP_NOTICE = 'Open Node => AI Agent => Cron. On the other nodes, set auto-accept-sign-request to Active and Instant. On this node, set auto-sign-and-broadcast to Active and Instant. You may miss trades if you rely on a person, or on AI actionable agreement and broadcasting, which can be slow.'
+
+export function broadcastHookReady(report) {
+  const jobs = report && report.signAndBroadcast && report.signAndBroadcast.jobs
+  if (!Array.isArray(jobs)) return false
+  return jobs.some((job) => job && job.name === 'auto-sign-and-broadcast' && job.set === true && job.active === true)
+}
+
+// report_instant_hooks, supplied by the host as pi.instantHooks().
+// This node can hold one Instant job. Auto-accept belongs on the other nodes.
+export function instantCronNotice(report) {
+  if (broadcastHookReady(report)) return null
+  return INSTANT_SETUP_NOTICE
+}
+
+function readInstantSetupNotice(pi) {
+  try {
+    if (!pi || typeof pi.instantHooks !== 'function') return INSTANT_SETUP_NOTICE
+    return instantCronNotice(pi.instantHooks())
+  } catch {
+    return INSTANT_SETUP_NOTICE
+  }
+}
+
 export function closePaperPosition(book, exitPrice) {
   const pnl = book.position === 'long'
     ? (exitPrice - book.entry) * book.qty
@@ -356,6 +380,195 @@ export function closePaperPosition(book, exitPrice) {
     levels: null,
     openedAt: -1,
   }
+}
+
+// Free cash still includes the 10% reserve against the open notional.
+// Remaining collateral is what can be posted without spending that reserve.
+export function availableCollateral(freeUsdc, qty, entry) {
+  const reserve = qty > 0 && entry > 0 ? HYPERLIQUID_COLLATERAL_RESERVE * qty * entry : 0
+  const available = freeUsdc - reserve
+  return available > 0 ? available : 0
+}
+
+export function priceAlongTarget(entry, target, pct) {
+  return entry + (target - entry) * (pct / 100)
+}
+
+export function closeReachedProgress(side, close, entry, target, pct) {
+  if (side !== 'long' && side !== 'short') return false
+  if (!(close > 0) || !(entry > 0) || !(target > 0)) return false
+  if (side === 'long' && !(target > entry)) return false
+  if (side === 'short' && !(target < entry)) return false
+  const level = priceAlongTarget(entry, target, pct)
+  return side === 'long' ? close >= level : close <= level
+}
+
+export function nextStopPrice(side, entry, target, offsetPct, currentStop, referenceClose) {
+  if (side !== 'long' && side !== 'short') return null
+  if (!(entry > 0) || !(target > 0) || !(referenceClose > 0)) return null
+  const next = priceAlongTarget(entry, target, offsetPct)
+  const tol = 1e-9 * Math.max(1, Math.abs(next))
+  if (side === 'long') {
+    if (!(next < referenceClose) || !(next < target)) return null
+    if (currentStop != null && next <= currentStop + tol) return null
+    return next
+  }
+  if (!(next > referenceClose) || !(next > target)) return null
+  if (currentStop != null && next >= currentStop - tol) return null
+  return next
+}
+
+// Set the stop back from the previous close by offsetPct of the entry-to-target range.
+// Long: close − offset. Short: close + offset. Only a tighter stop is returned.
+export function trailingStopFromClose(side, entry, target, offsetPct, currentStop, referenceClose) {
+  if (side !== 'long' && side !== 'short') return null
+  if (!(entry > 0) || !(target > 0) || !(referenceClose > 0) || !(offsetPct > 0)) return null
+  const span = target - entry
+  if (side === 'long' && !(span > 0)) return null
+  if (side === 'short' && !(span < 0)) return null
+  const next = referenceClose - (offsetPct / 100) * span
+  const tol = 1e-9 * Math.max(1, Math.abs(next))
+  if (side === 'long') {
+    if (!(next < referenceClose) || !(next < target)) return null
+    if (currentStop != null && next <= currentStop + tol) return null
+    return next
+  }
+  if (!(next > referenceClose) || !(next > target)) return null
+  if (currentStop != null && next >= currentStop - tol) return null
+  return next
+}
+
+export function parseManagementPair(value, label) {
+  if (value == null || value === false || value === '') return { rule: null }
+  let first
+  let second
+  if (Array.isArray(value)) {
+    first = value[0]
+    second = value[1]
+  } else if (typeof value === 'object') {
+    first = value.progressPct ?? value.progress
+    second = value.sizePct ?? value.offsetPct ?? value.amountPct
+  } else {
+    const parts = String(value).trim().replace(/%/g, ' ').split(/[\s,]+/).filter(Boolean)
+    if (parts.length < 2) {
+      return { error: `${label} needs two percents, such as 50 5.` }
+    }
+    first = parts[0]
+    second = parts[1]
+  }
+  const progressPct = num(first)
+  const sizePct = num(second)
+  if (progressPct == null || sizePct == null) {
+    return { error: `${label} needs two percents, such as 50 5.` }
+  }
+  if (!(progressPct > 0) || progressPct > 100) {
+    return { error: `${label} progress percent must be greater than 0 and at most 100.` }
+  }
+  if (sizePct < 0 || sizePct > 100) {
+    return { error: `${label} second percent must be from 0 to 100.` }
+  }
+  if (label === 'stop-to-entry') {
+    if (sizePct >= progressPct) {
+      return { error: 'stop-to-entry offset percent must be below the progress percent, so the new stop stays behind the trigger.' }
+    }
+  } else if (!(sizePct > 0)) {
+    return { error: `${label} size percent must be greater than 0.` }
+  }
+  return { rule: { progressPct, sizePct } }
+}
+
+export function parseManagementRules(args) {
+  const stopToEntry = parseManagementPair(args && args.stopToEntry, 'stop-to-entry')
+  if (stopToEntry.error) return stopToEntry
+  const addToPosition = parseManagementPair(args && args.addToPosition, 'add-to-position')
+  if (addToPosition.error) return addToPosition
+  const removeFromPosition = parseManagementPair(args && args.removeFromPosition, 'remove-from-position')
+  if (removeFromPosition.error) return removeFromPosition
+  const trailingStop = parseManagementPair(args && args.trailingStop, 'trailing-stop')
+  if (trailingStop.error) return trailingStop
+  return {
+    rules: {
+      stopToEntry: stopToEntry.rule,
+      addToPosition: addToPosition.rule,
+      removeFromPosition: removeFromPosition.rule,
+      trailingStop: trailingStop.rule,
+    },
+  }
+}
+
+export function managementActive(rules) {
+  return Boolean(rules && (rules.stopToEntry || rules.addToPosition || rules.removeFromPosition || rules.trailingStop))
+}
+
+// Previous close qualifies the rule. The fill price is where an add or remove trades.
+// stop-to-entry, add, and remove are consumed once per position. The trailing stop
+// updates on every later close that is still far enough toward the target.
+// A stop only moves tighter. An open already through the stop does not add or remove.
+export function planManagement(state) {
+  const done = {
+    stop: Boolean(state.done && state.done.stop),
+    add: Boolean(state.done && state.done.add),
+    remove: Boolean(state.done && state.done.remove),
+  }
+  const side = state.side
+  const entry = state.entry
+  const target = state.target
+  const prevClose = state.prevClose
+  const fill = state.fillPrice
+  const rules = state.rules || {}
+  let stop = state.stop != null ? state.stop : null
+  let stopChange = null
+  let trailChange = null
+  let add = null
+  let remove = null
+  if (!(target > 0) || !(entry > 0) || !(prevClose > 0)) {
+    return { stop, stopChange, trailChange, add, remove, done }
+  }
+  if (rules.stopToEntry && !done.stop && closeReachedProgress(side, prevClose, entry, target, rules.stopToEntry.progressPct)) {
+    done.stop = true
+    const next = nextStopPrice(side, entry, target, rules.stopToEntry.sizePct, stop, prevClose)
+    if (next != null) {
+      stop = next
+      stopChange = next
+    }
+  }
+  if (rules.trailingStop && closeReachedProgress(side, prevClose, entry, target, rules.trailingStop.progressPct)) {
+    const next = trailingStopFromClose(side, entry, target, rules.trailingStop.sizePct, stop, prevClose)
+    if (next != null) {
+      stop = next
+      trailChange = next
+    }
+  }
+  const throughStop = stop != null && fill > 0 && (side === 'long' ? fill <= stop : fill >= stop)
+  if (throughStop || !(fill > 0) || !(state.qty > 0)) {
+    return { stop, stopChange, trailChange, add, remove, done }
+  }
+  if (rules.removeFromPosition && !done.remove && closeReachedProgress(side, prevClose, entry, target, rules.removeFromPosition.progressPct)) {
+    done.remove = true
+    const frac = rules.removeFromPosition.sizePct / 100
+    const cutQty = state.qty * frac
+    const cutMargin = state.margin * frac
+    if (cutQty > 0 && cutMargin >= 0) {
+      const pnl = side === 'long' ? (fill - entry) * cutQty : (entry - fill) * cutQty
+      remove = { qty: cutQty, margin: cutMargin, pnl, price: fill, full: cutQty >= state.qty * (1 - 1e-9) }
+    }
+  }
+  if (rules.addToPosition && !done.add && closeReachedProgress(side, prevClose, entry, target, rules.addToPosition.progressPct)) {
+    done.add = true
+    const qtyAfter = remove && remove.full ? 0 : state.qty - (remove ? remove.qty : 0)
+    if (qtyAfter > 0) {
+      const freed = remove && !remove.full ? remove.margin + remove.pnl : 0
+      const cash = state.freeUsdc + freed
+      const available = state.collateralIsWithdrawable
+        ? (cash > 0 ? cash : 0)
+        : availableCollateral(cash, qtyAfter, entry)
+      const notional = tradableNotional(available, rules.addToPosition.sizePct, state.leverage)
+      if (notional > 0) {
+        add = { qty: notional / fill, margin: notional / state.leverage, price: fill }
+      }
+    }
+  }
+  return { stop, stopChange, trailChange, add, remove, done }
 }
 
 function confirms(idea, side) {
@@ -388,7 +601,7 @@ export default async function plugin(pi) {
 
   pi.registerTool({
     name: 'perp_trade_decision',
-    description: 'Decide a Hyperliquid perpetual from a market name and one technical-analysis type. Candlestick and the other types run inside this tool, including the candlestick switch. Returns an unsigned open or close payload, a backtest with its trade ledger and skip summary, or does nothing. Does not draw a chart.',
+    description: 'Decide a Hyperliquid perpetual from a market name and one technical-analysis type. Candlestick and the other types run inside this tool, including the candlestick switch. Returns an unsigned open, close, stop update, add, or partial remove, a backtest with its trade ledger and skip summary, or does nothing. Does not draw a chart.',
     parameters: {
       asset: { type: 'string', description: 'Hyperliquid market name, such as BTC. A contract address is rejected.' },
       interval: { type: 'string', description: 'Candle interval, such as 4h.' },
@@ -398,6 +611,10 @@ export default async function plugin(pi) {
       momentum: { type: 'boolean', description: 'When true, an open requires a clear momentum idea on the same side. A close does not.' },
       candlestick: { type: 'boolean', description: 'When true, an open requires a clear candlestick idea on the same side. A close does not.' },
       analysisSettings: { type: 'object', description: 'Periods and entry settings for the named type. Passed in by the caller. minConfidenceCandles from the candlestick desk block is the hit gate for candlestick_patterns and for the candlestick switch. Default 0.8 when that line is absent.' },
+      stopToEntry: { type: 'string', description: 'Two percents, such as "50 5" or "50% 5%". When the previous candle closes at least the first percent of the way from entry to target, move the stop once to entry plus the second percent of that distance.' },
+      addToPosition: { type: 'string', description: 'Two percents, such as "50 25". When the previous candle closes at least the first percent of the way from entry to target, add the second percent of the remaining free collateral once.' },
+      removeFromPosition: { type: 'string', description: 'Two percents, such as "75 50". When the previous candle closes at least the first percent of the way from entry to target, close the second percent of the current position once.' },
+      trailingStop: { type: 'string', description: 'Two percents, such as "50 5". When the previous candle closes at least the first percent of the way from entry to target, set the stop back from that close by the second percent of the entry-to-target range. Later closes tighten it again.' },
       lookbackDays: { type: 'number' },
       percent: { type: 'number' },
       initialBalanceUsdc: { type: 'string' },
@@ -405,23 +622,27 @@ export default async function plugin(pi) {
       chainId: { type: 'number' },
     },
     async execute(args) {
+      const setupNotice = readInstantSetupNotice(pi)
+      const finish = (result) => (
+        setupNotice && result && typeof result === 'object' ? { ...result, setupNotice } : result
+      )
       const asset = String(args.asset || '').trim()
-      if (!asset) return { error: 'Pass a Hyperliquid market name, such as BTC.' }
+      if (!asset) return finish({ error: 'Pass a Hyperliquid market name, such as BTC.' })
       if (isAddress(asset)) {
-        return { error: 'A contract address is rejected. Pass the Hyperliquid market name, such as BTC.' }
+        return finish({ error: 'A contract address is rejected. Pass the Hyperliquid market name, such as BTC.' })
       }
       const interval = String(args.interval || '4h')
       const candleCount = Math.floor(Number(args.candleCount))
       if (!Number.isFinite(candleCount) || candleCount < 2) {
-        return { error: 'candleCount must be a number of candles.' }
+        return finish({ error: 'candleCount must be a number of candles.' })
       }
       const analysisType = String(args.analysisType || '')
       if (!ANALYSIS_TYPES.includes(analysisType)) {
-        return { error: `analysisType must be one of: ${ANALYSIS_TYPES.join(', ')}.` }
+        return finish({ error: `analysisType must be one of: ${ANALYSIS_TYPES.join(', ')}.` })
       }
       const mode = String(args.mode || 'dry-run')
       if (mode !== 'dry-run' && mode !== 'backtest' && mode !== 'live') {
-        return { error: 'mode must be dry-run, backtest, or live.' }
+        return finish({ error: 'mode must be dry-run, backtest, or live.' })
       }
       const settings = args.analysisSettings && typeof args.analysisSettings === 'object' ? { ...args.analysisSettings } : {}
       const minConfidenceCandles = resolveMinConfidenceCandles(settings)
@@ -429,12 +650,15 @@ export default async function plugin(pi) {
       const percent = Number(args.percent) > 0 ? Number(args.percent) : 50
       const momentumOn = asBool(args.momentum)
       const candlestickOn = asBool(args.candlestick)
+      const parsedRules = parseManagementRules(args)
+      if (parsedRules.error) return finish({ error: parsedRules.error })
+      const management = parsedRules.rules
 
       let resolved
       try {
         resolved = await hl.hyperliquidResolvePerpMarket({ chainId, coin: asset })
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) }
+        return finish({ error: err instanceof Error ? err.message : String(err) })
       }
       const market = resolved.name || resolved.coin
       const days = Number(args.lookbackDays) > 0 ? Number(args.lookbackDays) : lookbackDays(interval, candleCount)
@@ -447,14 +671,14 @@ export default async function plugin(pi) {
       })
       const candles = (fetched.ohlcv && fetched.ohlcv.candles ? fetched.ohlcv.candles : []).slice(-candleCount)
       if (candles.length < candleCount) {
-        return { error: `Hyperliquid returned ${candles.length} candles; candleCount is ${candleCount}.` }
+        return finish({ error: `Hyperliquid returned ${candles.length} candles; candleCount is ${candleCount}.` })
       }
 
       const leverageRead = await readKeyGenLeverage(pi, hl, chainId, market)
-      if (leverageRead.error) return { error: leverageRead.error }
+      if (leverageRead.error) return finish({ error: leverageRead.error })
 
       if (mode === 'backtest') {
-        return backtest({
+        return finish(await backtest({
           pi,
           ideas,
           analysisType,
@@ -467,17 +691,18 @@ export default async function plugin(pi) {
           interval,
           candleCount,
           percent,
+          management,
           leverage: leverageRead.leverage,
           szDecimals: resolved.szDecimals,
           initialBalanceUsdc: args.initialBalanceUsdc || '1000',
           maxSeriesPoints: Number(args.maxSeriesPoints) > 0 ? Math.floor(Number(args.maxSeriesPoints)) : 400,
-        })
+        }))
       }
 
       const primary = await runAnalysis(pi, ideas, analysisType, candles, settings, minConfidenceCandles)
-      if (primary.error) return { error: primary.error }
+      if (primary.error) return finish({ error: primary.error })
       const book = await readBook(pi, hl, chainId, market, mode)
-      if (book.error) return { error: book.error }
+      if (book.error) return finish({ error: book.error })
       const decision = await decide({
         pi,
         ideas,
@@ -490,8 +715,9 @@ export default async function plugin(pi) {
         candlestickOn,
         position: book.position,
       })
-      if (decision.error) return { error: decision.error }
-      const last = candleRows(candles).at(-1)
+      if (decision.error) return finish({ error: decision.error })
+      const rows = candleRows(candles)
+      const last = rows.at(-1)
       const price = decision.idea && decision.idea.entry && decision.idea.entry.price
         ? decision.idea.entry.price
         : last && last.close
@@ -500,24 +726,46 @@ export default async function plugin(pi) {
       let liveDecision = decision.decision
       let liveReason = decision.reason
       let payload = {}
+      const managed = decision.decision !== 'close' && book.position && managementActive(management)
+        ? await liveManagement({
+          pi,
+          hl,
+          chainId,
+          book,
+          rows,
+          rules: management,
+          leverage: leverageRead.leverage,
+          withdrawable: leverageRead.withdrawable,
+          market,
+          szDecimals: resolved.szDecimals,
+          idea: decision.idea,
+        })
+        : null
       if (needsSpot && decision.decision === 'open') {
         liveDecision = 'nothing'
         liveReason = userNotice
+      } else if (managed && managed.actions.length) {
+        liveDecision = managed.actions.length === 1 ? managed.actions[0].action : 'manage'
+        liveReason = managed.reason
+        payload = {
+          actions: managed.actions,
+          ...(managed.actions.length === 1 ? managed.actions[0] : {}),
+        }
       } else if ((decision.decision === 'open' || decision.decision === 'close') && price) {
         const collateral = mode === 'live' ? leverageRead.accountValue : book.paperUsdc
         const notional = tradableNotional(collateral, percent, leverageRead.leverage)
         if (mode === 'live' && decision.decision === 'open' && !(collateral > 0)) {
-          return { error: 'The KeyGen perp account has no collateral for this order.' }
+          return finish({ error: 'The KeyGen perp account has no collateral for this order.' })
         }
         if (mode === 'live' && decision.decision === 'open' && notional / leverageRead.leverage > collateral) {
-          return { error: 'The KeyGen perp collateral is below the sized order.' }
+          return finish({ error: 'The KeyGen perp collateral is below the sized order.' })
         }
         const size = decision.decision === 'close' && book.positionSize
           ? book.positionSize
           : (price > 0 ? notional / price : 0)
         payload = orderPayload(decision.decision, market, decision.side, price, size, resolved.szDecimals)
       }
-      return {
+      return finish({
         mode,
         decision: liveDecision,
         reason: liveReason,
@@ -529,11 +777,11 @@ export default async function plugin(pi) {
         balanceRead: book.balanceRead,
         ...(mode === 'live' ? { spotUsdc: String(book.spot) } : {}),
         ...(userNotice ? { userNotice } : {}),
-        side: decision.side || null,
+        side: (managed && managed.actions.length ? book.position : decision.side) || null,
         confidence: decision.idea ? decision.idea.confidence : null,
         position: book.position,
         ...payload,
-      }
+      })
     },
   })
 }
@@ -557,7 +805,8 @@ async function readKeyGenLeverage(pi, hl, chainId, market) {
     return { error: 'Hyperliquid did not return leverage for this KeyGen and market.' }
   }
   const accountValue = num(context && context.account && context.account.accountValueUsd) || 0
-  return { leverage, accountValue }
+  const withdrawable = num(context && context.account && context.account.withdrawableUsd) || 0
+  return { leverage, accountValue, withdrawable }
 }
 
 async function readBook(pi, hl, chainId, market, mode) {
@@ -577,10 +826,137 @@ async function readBook(pi, hl, chainId, market, mode) {
   return {
     position: row ? (row.isLong ? 'long' : 'short') : null,
     positionSize: row && num(row.size) ? num(row.size) : 0,
+    entry: row ? num(row.entryPx) || 0 : 0,
+    margin: row ? num(row.marginUsedUsd) || 0 : 0,
     paperUsdc: spot,
     balanceRead: true,
     spot,
   }
+}
+
+function positionTriggers(hl, orders, coin, isLong, entry) {
+  const classify = hl && hl.hyperliquidOpenOrderTpslKind
+  let stop = null
+  let target = null
+  if (typeof classify !== 'function') return { stop, target }
+  for (const order of orders || []) {
+    if (String(order.coin || '').toLowerCase() !== String(coin).toLowerCase()) continue
+    let kind = null
+    try {
+      kind = classify(order, { isLong, referencePx: entry })
+    } catch {
+      kind = null
+    }
+    const px = num(order.triggerPx)
+    if (!(px > 0)) continue
+    if (kind === 'sl') stop = px
+    if (kind === 'tp') target = px
+  }
+  return { stop, target }
+}
+
+function managementAction(body) {
+  return { payload: body, ...body }
+}
+
+function managementActions(planned, coin, side, szDecimals) {
+  const actions = []
+  const reasons = []
+  const stopPx = planned.trailChange != null ? planned.trailChange : planned.stopChange
+  if (stopPx != null) {
+    const stopLossTriggerPxHuman = roundTo(stopPx, 6)
+    actions.push(managementAction({
+      kind: 'hyperliquid-perp',
+      action: 'update-stop',
+      tool: 'ctm_hyperliquid_build_update_position_tpsl_multisign',
+      coin,
+      side,
+      stopLossTriggerPxHuman,
+    }))
+    reasons.push(planned.trailChange != null
+      ? `Previous close reached trailing-stop. The stop moves to ${stopLossTriggerPxHuman}.`
+      : `Previous close reached stop-to-entry. The stop moves to ${stopLossTriggerPxHuman}.`)
+  }
+  if (planned.remove) {
+    const limitPxHuman = roundTo(planned.remove.price, 6)
+    const szHuman = roundTo(planned.remove.qty, szDecimals)
+    actions.push(managementAction({
+      kind: 'hyperliquid-perp',
+      action: 'remove',
+      tool: 'ctm_hyperliquid_build_close_multisign',
+      coin,
+      side,
+      isLong: side === 'long',
+      limitPxHuman,
+      szHuman,
+      reduceOnly: true,
+    }))
+    reasons.push('Previous close reached remove-from-position.')
+  }
+  if (planned.add) {
+    const limitPxHuman = roundTo(planned.add.price, 6)
+    const szHuman = roundTo(planned.add.qty, szDecimals)
+    actions.push(managementAction({
+      kind: 'hyperliquid-perp',
+      action: 'add',
+      tool: 'ctm_hyperliquid_build_limit_order_multisign',
+      coin,
+      side,
+      isBuy: side === 'long',
+      limitPxHuman,
+      szHuman,
+      tif: 'ioc',
+      reduceOnly: false,
+    }))
+    reasons.push('Previous close reached add-to-position.')
+  }
+  return { actions, reason: reasons.join(' ') }
+}
+
+async function liveManagement(input) {
+  const book = input.book
+  const rows = input.rows || []
+  const prev = rows.length >= 2 ? rows[rows.length - 2] : null
+  const last = rows.length ? rows[rows.length - 1] : null
+  const prevClose = prev && prev.close
+  const fillPrice = last && last.close
+  const entry = book.entry
+  const qty = book.positionSize
+  if (!(prevClose > 0) || !(fillPrice > 0) || !(entry > 0) || !(qty > 0)) {
+    return { actions: [], reason: '' }
+  }
+  let triggers = { stop: null, target: null }
+  if (typeof input.hl.hyperliquidFetchOrdersForExecutor === 'function') {
+    try {
+      const address = input.pi.preferredKeyGenAddress()
+      const fetched = await input.hl.hyperliquidFetchOrdersForExecutor({
+        chainId: input.chainId,
+        executorAddress: address,
+      })
+      triggers = positionTriggers(input.hl, fetched && fetched.orders, input.market, book.position === 'long', entry)
+    } catch {
+      triggers = { stop: null, target: null }
+    }
+  }
+  const fromIdea = protectiveLevels(book.position, entry, input.idea).target
+  const target = triggers.target || fromIdea
+  const margin = book.margin > 0 ? book.margin : qty * entry / input.leverage
+  const planned = planManagement({
+    side: book.position,
+    entry,
+    qty,
+    margin,
+    freeUsdc: input.withdrawable || 0,
+    collateralIsWithdrawable: true,
+    leverage: input.leverage,
+    stop: triggers.stop,
+    target,
+    prevClose,
+    fillPrice,
+    rules: input.rules,
+    done: { stop: false, add: false, remove: false },
+  })
+  return managementActions(planned, input.market, book.position, input.szDecimals)
 }
 
 async function confirmationIdea(input, analysisType) {
@@ -646,6 +1022,33 @@ async function backtest(input) {
   const reasonCounts = new Map()
   const rows = candleRows(input.candles)
   const minBars = Math.min(40, Math.max(10, Math.floor(rows.length / 5)))
+  const rules = input.management
+  let managed = { stop: false, add: false, remove: false }
+  function markedEquity(mark) {
+    const openPnl = position && qty && mark
+      ? (position === 'long' ? (mark - entry) * qty : (entry - mark) * qty)
+      : 0
+    return usdc + (position && qty ? margin + openPnl : 0)
+  }
+  function pushAdjusted(reason, barIndex, extra) {
+    const at = rows[barIndex]
+    ledger.push({
+      status: 'adjusted',
+      side: position,
+      reason,
+      entryPrice: Number(entry.toFixed(6)),
+      exitPrice: null,
+      entryTimeMs: openFill ? openFill.entryTimeMs : null,
+      exitTimeMs: at && at.timestampMs != null ? at.timestampMs : null,
+      barsHeld: barIndex - openedAt,
+      qty: Number(qty.toFixed(8)),
+      margin: Number(margin.toFixed(6)),
+      pnl: Number((extra.pnl || 0).toFixed(6)),
+      balanceUsdc: Number(markedEquity(extra.mark).toFixed(6)),
+      ...(extra.stopPrice != null ? { stopPrice: Number(extra.stopPrice.toFixed(6)) } : {}),
+      ...(extra.fillPrice != null ? { fillPrice: Number(extra.fillPrice.toFixed(6)) } : {}),
+    })
+  }
   function noteAnalysisError(reason) {
     analysisErrors += 1
     if (!analysisError) analysisError = String(reason || 'Analysis failed.')
@@ -683,6 +1086,7 @@ async function backtest(input) {
     levels = closed.levels
     openedAt = closed.openedAt
     openFill = null
+    managed = { stop: false, add: false, remove: false }
   }
   for (let i = minBars; i < input.candles.length; i += 1) {
     const slice = input.candles.slice(0, i + 1)
@@ -698,6 +1102,59 @@ async function backtest(input) {
     const price = bar && bar.close
     const flatAtStart = !position
     walked += 1
+    if (position && qty > 0 && i > openedAt && managementActive(rules)) {
+      const prevClose = rows[i - 1] && rows[i - 1].close
+      const fillPrice = bar && (bar.open != null ? bar.open : bar.close)
+      const planned = planManagement({
+        side: position,
+        entry,
+        qty,
+        margin,
+        freeUsdc: usdc,
+        leverage,
+        stop: levels && levels.invalidation,
+        target: levels && levels.target,
+        prevClose,
+        fillPrice,
+        rules,
+        done: managed,
+      })
+      managed = planned.done
+      if (planned.stopChange != null && levels) {
+        levels.invalidation = planned.stopChange
+        pushAdjusted('stop-to-entry', i, { mark: prevClose, stopPrice: planned.stopChange })
+      }
+      if (planned.trailChange != null && levels) {
+        levels.invalidation = planned.trailChange
+        pushAdjusted('trailing-stop', i, { mark: prevClose, stopPrice: planned.trailChange })
+      }
+      const throughStop = levels && levels.invalidation != null && fillPrice > 0
+        && (position === 'long' ? fillPrice <= levels.invalidation : fillPrice >= levels.invalidation)
+      if (!throughStop && planned.remove) {
+        if (planned.remove.full) {
+          closeBook(planned.remove.price, bar && bar.timestampMs, 'remove', null, i)
+        } else {
+          usdc += planned.remove.margin + planned.remove.pnl
+          qty -= planned.remove.qty
+          margin -= planned.remove.margin
+          if (levels) levels.liquidation = liquidationPrice(position, entry, leverage)
+          pushAdjusted('remove', i, {
+            mark: planned.remove.price,
+            fillPrice: planned.remove.price,
+            pnl: planned.remove.pnl,
+          })
+        }
+      }
+      if (position && qty > 0 && planned.add) {
+        const addQty = planned.add.qty
+        entry = (entry * qty + planned.add.price * addQty) / (qty + addQty)
+        qty += addQty
+        margin += planned.add.margin
+        usdc -= planned.add.margin
+        if (levels) levels.liquidation = liquidationPrice(position, entry, leverage)
+        pushAdjusted('add', i, { mark: planned.add.price, fillPrice: planned.add.price, pnl: 0 })
+      }
+    }
     if (position && qty > 0 && i > openedAt) {
       const exitPrice = levelExitPrice(position, levels, bar)
       if (exitPrice != null) closeBook(exitPrice, bar && bar.timestampMs, exitReason(levels, exitPrice) || 'invalidation', null, i)
@@ -778,6 +1235,7 @@ async function backtest(input) {
     leverage,
     balanceRead: false,
     initialBalanceUsdc: String(input.initialBalanceUsdc || initial),
+    ...(managementActive(rules) ? { management: rules } : {}),
     ledger,
     skipped: skippedSummary(walked, analysisErrors, analysisError, reasonCounts),
     balanceSeries: capped,

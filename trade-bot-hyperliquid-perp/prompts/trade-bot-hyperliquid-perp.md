@@ -1,6 +1,6 @@
 ---
 description: Hyperliquid perpetual decision from a market name and one analysis type
-argument-hint: <market> <interval> <candles> <analysisType> [dry-run|backtest|live] [momentum] [candlestick] [percent]
+argument-hint: <market> <interval> <candles> <analysisType> [dry-run|backtest|live] [momentum] [candlestick] [stop-to-entry XX YY] [trailing-stop XX YY] [add-to-position XX YY] [remove-from-position XX YY] [percent]
 ---
 
 Load the `trade-bot-hyperliquid-perp` skill, then call `perp_trade_decision` once.
@@ -21,8 +21,9 @@ Before the call, read `/app/agent_llm_config/trade-desk.yaml` with the one grep 
 
 Read the remainder from the left.
 
-- A number, or a number with `%`, is `percent`. Otherwise `percent` is 50.
+- `stop-to-entry`, `trailing-stop`, `add-to-position`, and `remove-from-position` each take the next two numbers. Percents may include `%`. Pass them as `stopToEntry`, `trailingStop`, `addToPosition`, and `removeFromPosition`, for example `50 5`. Those numbers are not `percent`. Leave a rule off when its words are absent.
+- A remaining number, or a number with `%`, is `percent`. Otherwise `percent` is 50.
 - `backtest`, `dry-run`, and `live` choose `mode`. If none is present, use `dry-run`.
 - The words `momentum` and `candlestick` turn those switches on. Leave them off when the words are absent.
 
-Only `live` may be followed by a multi-sign request, and only when the tool returns an unsigned open or close payload. If the result includes `userNotice`, tell the user that text, including the leverage and that they can ask to change it after USDC is on spot. Do not open an order and do not change leverage while that notice is present. Dry-run and backtest do not use real USDC. A result of do nothing is finished. Do not invent an order for it. On a backtest, report `skipped` with the ledger. If `analysisError` is set, quote that text. Use the `reasons` counts as the explanation. Do not invent another one.
+Only `live` may be followed by a multi-sign request, and only when the tool returns an unsigned payload. An open or a close uses the existing order tools. `update-stop` uses `ctm_hyperliquid_build_update_position_tpsl_multisign` with `stopLossTriggerPxHuman` only. `add` uses `ctm_hyperliquid_build_limit_order_multisign` with the returned side, price, size, and `tif` `ioc`. `remove` uses `ctm_hyperliquid_build_close_multisign` with `isLong` and `szHuman`. When `decision` is `manage`, sign `actions` in order and wait until each request is broadcast before the next. Sign `add` and `remove` once per open position. If the result includes `setupNotice`, quote that text in full before the decision. It starts with the node path `Node => AI Agent => Cron`. Do not leave that path out. If the result includes `userNotice`, tell the user that text, including the leverage and that they can ask to change it after USDC is on spot. Do not open an order and do not change leverage while that notice is present. Dry-run and backtest do not use real USDC. A result of do nothing is finished. Do not invent an order for it. On a backtest, report `skipped` with the ledger, including adjusted rows for `stop-to-entry`, `trailing-stop`, `add`, and `remove`. If `analysisError` is set, quote that text. Use the `reasons` counts as the explanation. Do not invent another one.

@@ -1,25 +1,90 @@
 # trade-bot-hyperliquid-perp
 
-Decides a Hyperliquid perpetual from a market name, a candle window, and one technical-analysis type from the market-data library.
+Decides a Hyperliquid perpetual from a market name, a candle window, and one technical analysis. A clear idea can open a position or close the one that is open. Optional rules can move the stop, trail it, add size, or remove size once price has moved from the entry toward the target. Dry-run and backtest use a paper balance. Live returns an unsigned payload. The plugin does not sign it and does not post it.
 
-The argument is a Hyperliquid market name such as `BTC`. A contract address is rejected. The name does not have to be saved on the node. Periods, entry settings, key-level touch settings, Fibonacci bracket settings, the candlestick hit gate, and classic-pattern scan settings are passed in from Host YAML `trade-desk.yaml` (`universal`, `keyLevels`, `keyLevelFibonacci`, `candlestick.minConfidenceCandles`, and `classicPatterns`). `minConfidenceCandles` defaults to 0.8 when that line is absent. It is used for `candlestick_patterns` and for the `candlestick` switch on every other analysis type. Position size comes from the `percent` argument. The `momentum` and `candlestick` switches require that confirmation on the same side only before an open. A close does not use either switch. Dry-run and backtest do not use real USDC. The tool returns an unsigned payload. It does not sign and it does not post the multi-sign request.
+The market name does not have to be saved on the node. A contract address is rejected. Periods and entry settings come from `trade-desk.yaml`. Candlestick analysis runs inside the plugin. A separate request for a chart still uses the chart tools.
 
-Analysis types: `trend_structure`, `elliott_waves`, `key_levels`, `key_level_fibonacci`, `divergence`, `range_volatility`, `bollinger_bands`, `donchian_breakout`, `supertrend`, `ichimoku`, `z_score`, `moving_averages`, `chart_patterns`, `momentum`, `candlestick_patterns`.
+## Setup
 
-Intervals: `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `8h`, `12h`, `1d`, `3d`, `1w`, `1M`.
+On the other nodes in the group, open Node => AI Agent => Cron and set `auto-accept-sign-request` to Active and Instant. On this node, set `auto-sign-and-broadcast` to Active and Instant in the same place. A node can hold only one Instant job, so the accept job stays on the other nodes and the broadcast job stays on this one.
 
-## Example
+Each run reads those instant cron settings. If `auto-sign-and-broadcast` on this node is not both Active and Instant, the result includes `setupNotice`. That text starts with the path `Node => AI Agent => Cron`, then says you may miss trades if you rely on a person, or on AI actionable agreement and broadcasting, which can be slow.
 
-From the node chat:
+## Arguments
+
+- `asset` — Hyperliquid market name, such as `BTC`. A `0x` contract address is rejected.
+- `interval` — `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `8h`, `12h`, `1d`, `3d`, `1w`, `1M`.
+- `candleCount` — number of candles. An integer of at least 2.
+- `analysisType` — `trend_structure`, `elliott_waves`, `key_levels`, `key_level_fibonacci`, `divergence`, `range_volatility`, `bollinger_bands`, `donchian_breakout`, `supertrend`, `ichimoku`, `z_score`, `moving_averages`, `chart_patterns`, `momentum`, `candlestick_patterns`.
+- `mode` — `dry-run` (default), `backtest`, or `live`.
+- `momentum` — omit it (default) or `on`. When on, an open must match the momentum idea. A close does not use it.
+- `candlestick` — omit it (default) or `on`. When on, an open must match the candlestick idea. A close does not use it.
+- `percent` — a positive number, default `50`. The fraction of the notional Hyperliquid will allow.
+- `stop-to-entry` — optional `XX YY`, such as `50 5`. `XX` is above 0 and at most 100. `YY` is 0 or more and below `XX`. Moves the stop once.
+- `trailing-stop` — optional `XX YY`, such as `50 5`. Each value is above 0 and at most 100. Sets the stop back from the previous close, and tightens it on later closes.
+- `add-to-position` — optional `XX YY`, such as `50 25`. Each value is above 0 and at most 100. Adds that percent of free collateral once.
+- `remove-from-position` — optional `XX YY`, such as `75 50`. Each value is above 0 and at most 100. Closes that percent of the position once. `100` closes it.
+
+The four position rules need a target on the open position. `XX` is how far the previous candle close must travel from the entry toward that target. On a long from 10 to 20, `50` means the previous close is 15 or higher. On a short from 20 to 10, `50` means the previous close is 15 or lower.
+
+## Examples
+
+A dry-run is the default. This asks for the current ETH idea on 200 candles of 4h supertrend and does not place a paper trade:
 
 ```text
-/trade-bot-hyperliquid-perp BTC 4h 400 chart_patterns backtest
+/trade-bot-hyperliquid-perp ETH 4h 200 supertrend
 ```
 
-That paper-trades BTC on 400 candles of 4h chart patterns. Leave `backtest` off for a dry-run. `live` returns an unsigned open or close when the idea calls for one. Add `momentum` or `candlestick` to require that confirmation before an open. A number such as `50` is the percent of tradable notional, and the default is 50.
+A backtest replays the idea across the window. This paper-trades BTC on 400 candles of 4h chart patterns, using half of the notional the account can support:
 
-Candlestick analysis runs inside the plugin, including the `candlestick_patterns` type and the `candlestick` switch. The decision tool does not call `analyze_candlestick_patterns` and does not draw the interactive candlestick menu. A separate request for a chart still uses that menu.
+```text
+/trade-bot-hyperliquid-perp BTC 4h 400 chart_patterns backtest 50
+```
+
+`momentum` and `candlestick` gate opens only. This requires both confirmations before a donchian open, and still closes on an opposite idea:
+
+```text
+/trade-bot-hyperliquid-perp BTC 30m 400 donchian_breakout backtest momentum candlestick
+```
+
+Live reads the KeyGen position and returns an unsigned payload when the idea calls for one:
+
+```text
+/trade-bot-hyperliquid-perp HYPE 1h 200 z_score live
+```
+
+The same command can carry position rules. Words come in any order. A bare number is `percent`. Each rule takes the two numbers that follow it:
+
+```text
+/trade-bot-hyperliquid-perp BTC 30m 400 donchian_breakout backtest 50 stop-to-entry 50 5 trailing-stop 50 5 add-to-position 60 25 remove-from-position 80 40
+```
+
+### Stop to entry
+
+`stop-to-entry 50 5` runs once. Entry 10 and target 20 put the long stop at `10 + 5% × (20 − 10) = 10.5` after a previous close of 15 or higher. Entry 20 and target 10 put the short stop at `20 − 5% × (20 − 10) = 19.5` after a previous close of 15 or lower.
+
+```text
+/trade-bot-hyperliquid-perp ETH 30m 400 supertrend backtest stop-to-entry 50 5
+```
+
+### Trailing stop
+
+`trailing-stop 50 5` measures the same 50% trip, then sets the stop back from that close by 5% of the entry-to-target range. Entry 10, target 20, and a close of 15 put a long stop at `15 − 0.5 = 14.5`. A later close of 16 moves it to 15.5. A close that would loosen it leaves the stop where it is. The short from 20 to 10, with a close of 15, puts the stop at 15.5.
+
+```text
+/trade-bot-hyperliquid-perp BTC 15m 400 supertrend backtest trailing-stop 50 5
+```
+
+### Add and remove
+
+`add-to-position 50 25` adds 25% of the collateral still free under the same notional cap, once the previous close has covered half the distance to the target. `remove-from-position 75 50` later closes half of the position. `remove-from-position 75 100` closes all of it.
+
+```text
+/trade-bot-hyperliquid-perp BTC 1h 300 donchian_breakout backtest add-to-position 50 25 remove-from-position 75 50
+```
+
+A backtest ledger row records a stop move as `stop-to-entry` or `trailing-stop`, an add as `add`, and a partial remove as `remove`. A remove of the whole position closes the trade with reason `remove`.
 
 ![Decision matrix](./decision-matrix.svg)
 
-Version **v1.1.0**.
+Version **v1.2.0**.
