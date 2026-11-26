@@ -342,8 +342,10 @@ export function spotTopUpNotice(market, leverage) {
   return `Send USDC to the KeyGen spot balance before a live trade. Leverage on ${market} is ${leverage}x. Hyperliquid will not change that leverage until spot USDC has arrived. After the USDC is on spot, ask the agent to change it.`
 }
 
-export const INSTANT_SETUP_NOTICE = 'Open Node => AI Agent => Cron. On the other nodes, set auto-accept-sign-request to Active and Instant. On this node, set auto-sign-and-broadcast to Active and Instant. You may miss trades if you rely on a person, or on AI actionable agreement and broadcasting, which can be slow.'
+export const INSTANT_SETUP_NOTICE = 'Open Node => AI Agent => Cron. On the other nodes, set auto-accept-sign-request to Active and Instant. On this node, the one where you entered the command, set auto-sign-and-broadcast to Active and Instant. You may miss trades if you rely on a person, or on AI actionable agreement and broadcasting, which can be slow.'
 
+// Only the originator is visible. Pass when its auto-sign-and-broadcast job is Instant and Active.
+// Auto-accept on the other nodes is named in the notice. This check does not read those nodes.
 export function broadcastHookReady(report) {
   const jobs = report && report.signAndBroadcast && report.signAndBroadcast.jobs
   if (!Array.isArray(jobs)) return false
@@ -351,7 +353,6 @@ export function broadcastHookReady(report) {
 }
 
 // report_instant_hooks, supplied by the host as pi.instantHooks().
-// This node can hold one Instant job. Auto-accept belongs on the other nodes.
 export function instantCronNotice(report) {
   if (broadcastHookReady(report)) return null
   return INSTANT_SETUP_NOTICE
@@ -438,6 +439,38 @@ export function trailingStopFromClose(side, entry, target, offsetPct, currentSto
   return next
 }
 
+const RULE_FIELDS = [
+  ['stopToEntry', ['stopToEntry', 'stop-to-entry', 'stop_to_entry']],
+  ['trailingStop', ['trailingStop', 'trailing-stop', 'trailing_stop']],
+  ['addToPosition', ['addToPosition', 'add-to-position', 'add_to_position']],
+  ['removeFromPosition', ['removeFromPosition', 'remove-from-position', 'remove_from_position']],
+]
+
+function ruleField(args, keys) {
+  if (!args || typeof args !== 'object') return undefined
+  for (const key of keys) {
+    if (args[key] != null && args[key] !== '') return args[key]
+  }
+  return undefined
+}
+
+// A remainder stuffed into one string still carries every rule. Structured fields win.
+function liftRulesFromText(text) {
+  const tokens = String(text || '').replace(/%/g, ' ').split(/\s+/).filter(Boolean)
+  const lifted = {}
+  for (let i = 0; i < tokens.length; i += 1) {
+    const word = tokens[i].toLowerCase()
+    const field = RULE_FIELDS.find(([, keys]) => keys.some((key) => key === word))
+    if (!field) continue
+    const first = num(tokens[i + 1])
+    const second = num(tokens[i + 2])
+    if (first == null || second == null) continue
+    if (lifted[field[0]] == null) lifted[field[0]] = `${tokens[i + 1]} ${tokens[i + 2]}`
+    i += 2
+  }
+  return lifted
+}
+
 export function parseManagementPair(value, label) {
   if (value == null || value === false || value === '') return { rule: null }
   let first
@@ -467,9 +500,15 @@ export function parseManagementPair(value, label) {
   if (sizePct < 0 || sizePct > 100) {
     return { error: `${label} second percent must be from 0 to 100.` }
   }
-  if (label === 'stop-to-entry') {
-    if (sizePct >= progressPct) {
-      return { error: 'stop-to-entry offset percent must be below the progress percent, so the new stop stays behind the trigger.' }
+  if (label === 'stop-to-entry' || label === 'trailing-stop') {
+    if (label === 'trailing-stop' && !(sizePct > 0)) {
+      return { error: 'trailing-stop offset percent must be greater than 0.' }
+    }
+    if (!(sizePct < progressPct)) {
+      const why = label === 'trailing-stop'
+        ? 'so the trigger price stays ahead of the stop'
+        : 'so the new stop stays behind the trigger'
+      return { error: `${label} offset percent must be below the progress percent, ${why}.` }
     }
   } else if (!(sizePct > 0)) {
     return { error: `${label} size percent must be greater than 0.` }
@@ -478,13 +517,18 @@ export function parseManagementPair(value, label) {
 }
 
 export function parseManagementRules(args) {
-  const stopToEntry = parseManagementPair(args && args.stopToEntry, 'stop-to-entry')
+  const source = args && typeof args === 'object' ? { ...args } : {}
+  const lifted = liftRulesFromText(Object.values(source).filter((value) => typeof value === 'string').join(' '))
+  for (const [name, keys] of RULE_FIELDS) {
+    if (ruleField(source, keys) == null && lifted[name] != null) source[name] = lifted[name]
+  }
+  const stopToEntry = parseManagementPair(ruleField(source, RULE_FIELDS[0][1]), 'stop-to-entry')
   if (stopToEntry.error) return stopToEntry
-  const addToPosition = parseManagementPair(args && args.addToPosition, 'add-to-position')
+  const addToPosition = parseManagementPair(ruleField(source, RULE_FIELDS[2][1]), 'add-to-position')
   if (addToPosition.error) return addToPosition
-  const removeFromPosition = parseManagementPair(args && args.removeFromPosition, 'remove-from-position')
+  const removeFromPosition = parseManagementPair(ruleField(source, RULE_FIELDS[3][1]), 'remove-from-position')
   if (removeFromPosition.error) return removeFromPosition
-  const trailingStop = parseManagementPair(args && args.trailingStop, 'trailing-stop')
+  const trailingStop = parseManagementPair(ruleField(source, RULE_FIELDS[1][1]), 'trailing-stop')
   if (trailingStop.error) return trailingStop
   return {
     rules: {
@@ -1003,7 +1047,7 @@ async function decide(input) {
   return { decision: 'close', reason: 'The open perpetual is in the opposite direction.', idea, side, candlestickPattern }
 }
 
-async function backtest(input) {
+export async function backtest(input) {
   const initial = num(input.initialBalanceUsdc) || 1000
   const leverage = input.leverage >= 1 ? input.leverage : 1
   let usdc = initial
@@ -1090,14 +1134,16 @@ async function backtest(input) {
   }
   for (let i = minBars; i < input.candles.length; i += 1) {
     const slice = input.candles.slice(0, i + 1)
-    const primary = await runAnalysis(
-      input.pi,
-      input.ideas,
-      input.analysisType,
-      slice,
-      input.settings,
-      input.minConfidenceCandles,
-    )
+    const primary = typeof input.ideaAt === 'function'
+      ? await input.ideaAt(i, slice)
+      : await runAnalysis(
+        input.pi,
+        input.ideas,
+        input.analysisType,
+        slice,
+        input.settings,
+        input.minConfidenceCandles,
+      )
     const bar = rows[i]
     const price = bar && bar.close
     const flatAtStart = !position

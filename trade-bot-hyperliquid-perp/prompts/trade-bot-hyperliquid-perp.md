@@ -21,7 +21,7 @@ Before the call, read `/app/agent_llm_config/trade-desk.yaml` with the one grep 
 
 Read the remainder from the left.
 
-- `stop-to-entry`, `trailing-stop`, `add-to-position`, and `remove-from-position` each take the next two numbers. Percents may include `%`. Pass them as `stopToEntry`, `trailingStop`, `addToPosition`, and `removeFromPosition`, for example `50 5`. Those numbers are not `percent`. Leave a rule off when its words are absent.
+- `stop-to-entry`, `trailing-stop`, `add-to-position`, and `remove-from-position` can all be present together. They are not alternatives. Each takes the next two numbers. Percents may include `%`. Pass every one that appears, on dry-run, backtest, and live, as `stopToEntry`, `trailingStop`, `addToPosition`, and `removeFromPosition`, for example `50 5`. Those numbers are not `percent`. Leave a rule off only when its words are absent. A backtest applies each passed rule to the paper position. For `trailing-stop`, the second percent must be below the first, so the trigger price stays ahead of the stop.
 - A remaining number, or a number with `%`, is `percent`. Otherwise `percent` is 50.
 - `backtest`, `dry-run`, and `live` choose `mode`. If none is present, use `dry-run`.
 - The words `momentum` and `candlestick` turn those switches on. Leave them off when the words are absent.

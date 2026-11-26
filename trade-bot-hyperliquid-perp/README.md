@@ -8,7 +8,7 @@ The market name does not have to be saved on the node. A contract address is rej
 
 On the other nodes in the group, open Node => AI Agent => Cron and set `auto-accept-sign-request` to Active and Instant. On this node, set `auto-sign-and-broadcast` to Active and Instant in the same place. A node can hold only one Instant job, so the accept job stays on the other nodes and the broadcast job stays on this one.
 
-Each run reads those instant cron settings. If `auto-sign-and-broadcast` on this node is not both Active and Instant, the result includes `setupNotice`. That text starts with the path `Node => AI Agent => Cron`, then says you may miss trades if you rely on a person, or on AI actionable agreement and broadcasting, which can be slow.
+Each run checks only this node, the one where the command is entered. The check passes when `auto-sign-and-broadcast` is Active and Instant. It does not read the other nodes. If that job is not both Active and Instant, the result includes `setupNotice`. That text starts with the path `Node => AI Agent => Cron`, tells you to set `auto-accept-sign-request` to Active and Instant on the other nodes, and tells you to set `auto-sign-and-broadcast` on this node. It then says you may miss trades if you rely on a person, or on AI actionable agreement and broadcasting, which can be slow.
 
 ## Arguments
 
@@ -21,7 +21,7 @@ Each run reads those instant cron settings. If `auto-sign-and-broadcast` on this
 - `candlestick` — omit it (default) or `on`. When on, an open must match the candlestick idea. A close does not use it.
 - `percent` — a positive number, default `50`. The fraction of the notional Hyperliquid will allow.
 - `stop-to-entry` — optional `XX YY`, such as `50 5`. `XX` is above 0 and at most 100. `YY` is 0 or more and below `XX`. Moves the stop once.
-- `trailing-stop` — optional `XX YY`, such as `50 5`. Each value is above 0 and at most 100. Sets the stop back from the previous close, and tightens it on later closes.
+- `trailing-stop` — optional `XX YY`, such as `50 5`. Each value is above 0 and at most 100, and `YY` is below `XX`, so the trigger price stays ahead of the stop. Sets the stop back from the previous close, and tightens it on later closes.
 - `add-to-position` — optional `XX YY`, such as `50 25`. Each value is above 0 and at most 100. Adds that percent of free collateral once.
 - `remove-from-position` — optional `XX YY`, such as `75 50`. Each value is above 0 and at most 100. Closes that percent of the position once. `100` closes it.
 
@@ -69,7 +69,7 @@ The same command can carry position rules. Words come in any order. A bare numbe
 
 ### Trailing stop
 
-`trailing-stop 50 5` measures the same 50% trip, then sets the stop back from that close by 5% of the entry-to-target range. Entry 10, target 20, and a close of 15 put a long stop at `15 − 0.5 = 14.5`. A later close of 16 moves it to 15.5. A close that would loosen it leaves the stop where it is. The short from 20 to 10, with a close of 15, puts the stop at 15.5.
+`trailing-stop 50 5` measures the same 50% trip, then sets the stop back from that close by 5% of the entry-to-target range. The second percent has to be below the first, so that trigger price stays ahead of the stop. Entry 10, target 20, and a close of 15 put a long stop at `15 − 0.5 = 14.5`. A later close of 16 moves it to 15.5. A close that would loosen it leaves the stop where it is. The short from 20 to 10, with a close of 15, puts the stop at 15.5.
 
 ```text
 /trade-bot-hyperliquid-perp BTC 15m 400 supertrend backtest trailing-stop 50 5
