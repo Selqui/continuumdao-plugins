@@ -2,7 +2,7 @@
 
 Decides a Hyperliquid perpetual from a market name, a candle window, and one technical analysis. A clear idea can open a position or close the one that is open. Optional rules can move the stop, trail it, add size, or remove size once price has moved from the entry toward the target. Dry-run and backtest use a paper balance. Live returns an unsigned payload. The plugin does not sign it and does not post it.
 
-The word `message` posts an account note before that decision on dry-run and live. The note is the spot USDC still available on the preferred KeyGen and the unrealised profit or loss of its open perpetuals. The same text goes to the KeyGen and, when a Telegram webhook is configured, to that operator chat. Backtest does not send it.
+The word `message` posts an account note before that decision on dry-run and live. The note is the spot USDC still available on the selected KeyGen and the unrealised profit or loss of its open perpetuals. Omit `keygen` and that KeyGen is the preferred one for this chat. The same text goes to the KeyGen and, when a Telegram webhook is configured, to that operator chat. Backtest does not send it.
 
 The market name does not have to be saved on the node. A contract address is rejected. Periods and entry settings come from `trade-desk.yaml`. Candlestick analysis runs inside the plugin. A separate request for a chart still uses the chart tools.
 
@@ -27,12 +27,13 @@ Each run checks only this node, the one where the command is entered. The check 
 - `add-to-position` — optional `XX YY`, such as `50 25`. Each value is above 0 and at most 100. Adds that percent of free collateral once.
 - `remove-from-position` — optional `XX YY`, such as `75 50`. Each value is above 0 and at most 100. Closes that percent of the position once. `100` closes it.
 - `message` — omit it, or include the word. On dry-run and live, the plugin posts the account note below before it fetches candles or decides. Backtest does not post.
+- `keygen` — omit it to use the preferred KeyGen for this chat, or pass a KeyGen id. An Ethereum address is rejected. The plugin reads that KeyGen's leverage, spot balance, and open perpetual, and posts notes to that KeyGen. The result includes `keyGenId` when this argument is set. Pass that id to the Hyperliquid build tools.
 
 The four position rules need a target on the open position. `XX` is how far the previous candle close must travel from the entry toward that target. On a long from 10 to 20, `50` means the previous close is 15 or higher. On a short from 20 to 10, `50` means the previous close is 15 or lower.
 
 ## Account message
 
-Include `message` on dry-run or live and the plugin reads the preferred KeyGen on Hyperliquid before the analysis. Backtest skips that read and does not post, even when the word is present. The decision after a dry-run or live note is unchanged: dry-run stays on paper, and live still returns an unsigned payload.
+Include `message` on dry-run or live and the plugin reads the selected KeyGen on Hyperliquid before the analysis. Backtest skips that read and does not post, even when the word is present. The decision after a dry-run or live note is unchanged: dry-run stays on paper, and live still returns an unsigned payload.
 
 The note has two figures.
 
@@ -140,4 +141,4 @@ A backtest ledger row records `candle`, the 1-based number of that event in the 
 
 ![Decision matrix](./decision-matrix.svg)
 
-Version **v1.2.1**.
+Version **v1.2.2**.

@@ -358,6 +358,26 @@ export function messageRequested(value) {
   return word === 'on' || word === 'message'
 }
 
+export function keyGenArgument(value) {
+  if (value == null || value === false || value === '') return { id: '' }
+  const text = String(value).trim()
+  if (!text) return { id: '' }
+  if (isAddress(text)) return { error: 'keygen is a KeyGen id, not an Ethereum address.' }
+  return { id: text }
+}
+
+export async function resolvePluginKeyGen(pi, keyGenId) {
+  const id = String(keyGenId || '').trim()
+  if (!id) return { address: pi.preferredKeyGenAddress(), keyGenId: '' }
+  if (!pi || typeof pi.keyGenEthereumAddress !== 'function') {
+    throw new Error('This node cannot look up a KeyGen id. Omit keygen to use the preferred KeyGen.')
+  }
+  const resolved = await pi.keyGenEthereumAddress(id)
+  const address = resolved && String(resolved.address || '').trim()
+  if (!address) throw new Error('That KeyGen has no Ethereum address.')
+  return { address, keyGenId: String((resolved && resolved.keyGenId) || id).trim() }
+}
+
 export function formatUsdAmount(value) {
   const n = num(value)
   return (n == null ? 0 : n).toFixed(2)
@@ -443,10 +463,12 @@ export function threadStatePath() {
   return join(dirname(dirname(fileURLToPath(import.meta.url))), '.position-state.json')
 }
 
-export function keyGenPostForThread(threadId, body) {
+export function keyGenPostForThread(threadId, body, keyGenId) {
   const replyTo = String(threadId || '').trim()
-  if (replyTo) return { replyTo, body }
-  return { title: ACCOUNT_STATUS_TITLE, body }
+  const id = String(keyGenId || '').trim()
+  const selected = id ? { keyGenId: id } : {}
+  if (replyTo) return { replyTo, body, ...selected }
+  return { title: ACCOUNT_STATUS_TITLE, body, ...selected }
 }
 
 export function replyTargetMissing(err) {
@@ -831,6 +853,7 @@ export default async function plugin(pi) {
       removeFromPosition: { type: 'string', description: 'Two percents, such as "75 50". When the previous candle closes at least the first percent of the way from entry to target, close the second percent of the current position once.' },
       trailingStop: { type: 'string', description: 'Two percents, such as "50 5". When the previous candle closes at least the first percent of the way from entry to target, set the stop back from that close by the second percent of the entry-to-target range. Later closes tighten it again.' },
       message: { type: 'boolean', description: 'When true, and mode is not backtest, at the start post spot USDC available and the unrealised PnL of open perpetuals. The first post opens one KeyGen thread. Later posts reply on that thread. The same account text is sent to Telegram when that webhook is configured. An open, a close, or a rule update on that run is a second reply on the same thread, with the action and the price. Backtest does not post.' },
+      keygen: { type: 'string', description: 'KeyGen id to read and message. Omit it to use the preferred KeyGen for this chat. An Ethereum address is rejected.' },
       lookbackDays: { type: 'number' },
       percent: { type: 'number' },
       initialBalanceUsdc: { type: 'string' },
@@ -840,11 +863,13 @@ export default async function plugin(pi) {
     async execute(args) {
       const setupNotice = readInstantSetupNotice(pi)
       let accountNotice = null
+      let keyGen = null
       const finish = (result) => {
         if (!result || typeof result !== 'object') return result
         const extra = {}
         if (setupNotice) extra.setupNotice = setupNotice
         if (accountNotice) Object.assign(extra, accountNotice)
+        if (keyGen && keyGen.keyGenId) extra.keyGenId = keyGen.keyGenId
         return Object.keys(extra).length ? { ...result, ...extra } : result
       }
       const asset = String(args.asset || '').trim()
@@ -872,12 +897,19 @@ export default async function plugin(pi) {
       const momentumOn = asBool(args.momentum)
       const candlestickOn = asBool(args.candlestick)
       const messageOn = messageRequested(args.message)
+      const chosenKeyGen = keyGenArgument(args.keygen)
+      if (chosenKeyGen.error) return finish({ error: chosenKeyGen.error })
+      try {
+        keyGen = await resolvePluginKeyGen(pi, chosenKeyGen.id)
+      } catch (err) {
+        return finish({ error: err instanceof Error ? err.message : String(err) })
+      }
       const parsedRules = parseManagementRules(args)
       if (parsedRules.error) return finish({ error: parsedRules.error })
       const management = parsedRules.rules
 
       if (messageOn && mode !== 'backtest') {
-        const posted = await postAccountStatus(pi, hl, chainId)
+        const posted = await postAccountStatus(pi, hl, chainId, keyGen.address, keyGen.keyGenId)
         if (posted.error) return finish({ error: posted.error })
         accountNotice = posted.notice
       }
@@ -902,7 +934,7 @@ export default async function plugin(pi) {
         return finish({ error: `Hyperliquid returned ${candles.length} candles; candleCount is ${candleCount}.` })
       }
 
-      const leverageRead = await readKeyGenLeverage(pi, hl, chainId, market)
+      const leverageRead = await readKeyGenLeverage(hl, chainId, market, keyGen.address)
       if (leverageRead.error) return finish({ error: leverageRead.error })
 
       if (mode === 'backtest') {
@@ -929,7 +961,7 @@ export default async function plugin(pi) {
 
       const primary = await runAnalysis(pi, ideas, analysisType, candles, settings, minConfidenceCandles)
       if (primary.error) return finish({ error: primary.error })
-      const book = await readBook(pi, hl, chainId, market, mode)
+      const book = await readBook(hl, chainId, market, mode, keyGen.address)
       if (book.error) return finish({ error: book.error })
       const decision = await decide({
         pi,
@@ -965,6 +997,7 @@ export default async function plugin(pi) {
           leverage: leverageRead.leverage,
           withdrawable: leverageRead.withdrawable,
           market,
+          address: keyGen.address,
           szDecimals: resolved.szDecimals,
           idea: decision.idea,
         })
@@ -1003,7 +1036,7 @@ export default async function plugin(pi) {
         })
         const body = positionEventMessage(events)
         if (body) {
-          const posted = await postPositionNote(pi, body)
+          const posted = await postPositionNote(pi, body, keyGen.address, keyGen.keyGenId)
           if (posted.error) return finish({ error: posted.error })
           accountNotice = { ...(accountNotice || {}), ...posted.notice }
         }
@@ -1041,13 +1074,7 @@ async function sendTelegramStatus(pi, body) {
   }
 }
 
-async function postAccountStatus(pi, hl, chainId) {
-  let address = ''
-  try {
-    address = pi.preferredKeyGenAddress()
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) }
-  }
+async function postAccountStatus(pi, hl, chainId, address, keyGenId) {
   let balances
   let positions
   try {
@@ -1063,7 +1090,7 @@ async function postAccountStatus(pi, hl, chainId) {
   const spot = num(balances && balances.balances && balances.balances.spotUsdcAvailable) || 0
   const unrealised = sumUnrealisedPnl(positions && positions.positions)
   const body = accountStatusMessage(spot, unrealised)
-  const sent = await sendAccountThread(pi, address, body)
+  const sent = await sendAccountThread(pi, address, body, keyGenId)
   if (sent.error) return sent
   const telegram = await sendTelegramStatus(pi, body)
   return {
@@ -1078,14 +1105,8 @@ async function postAccountStatus(pi, hl, chainId) {
   }
 }
 
-async function postPositionNote(pi, body) {
-  let address = ''
-  try {
-    address = pi.preferredKeyGenAddress()
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) }
-  }
-  const sent = await sendAccountThread(pi, address, body)
+async function postPositionNote(pi, body, address, keyGenId) {
+  const sent = await sendAccountThread(pi, address, body, keyGenId)
   if (sent.error) return sent
   return {
     notice: {
@@ -1097,19 +1118,19 @@ async function postPositionNote(pi, body) {
   }
 }
 
-async function sendAccountThread(pi, address, body) {
+async function sendAccountThread(pi, address, body, keyGenId) {
   const file = threadStatePath()
   const rootId = await readKeyGenThreadId(file, address)
   let posted
   let savedRoot = rootId
   try {
-    posted = await pi.sendKeyGenMessage(keyGenPostForThread(rootId, body))
+    posted = await pi.sendKeyGenMessage(keyGenPostForThread(rootId, body, keyGenId))
   } catch (err) {
     if (!rootId || !replyTargetMissing(err)) {
       return { error: err instanceof Error ? err.message : String(err) }
     }
     try {
-      posted = await pi.sendKeyGenMessage(keyGenPostForThread('', body))
+      posted = await pi.sendKeyGenMessage(keyGenPostForThread('', body, keyGenId))
     } catch (err2) {
       return { error: err2 instanceof Error ? err2.message : String(err2) }
     }
@@ -1124,13 +1145,7 @@ async function sendAccountThread(pi, address, body) {
   return { posted, threadId, ...(threadError ? { threadError } : {}) }
 }
 
-async function readKeyGenLeverage(pi, hl, chainId, market) {
-  let address = ''
-  try {
-    address = pi.preferredKeyGenAddress()
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) }
-  }
+async function readKeyGenLeverage(hl, chainId, market, address) {
   const fetched = await hl.hyperliquidFetchOpenMarketContext({
     chainId,
     executorAddress: String(address).trim(),
@@ -1147,15 +1162,9 @@ async function readKeyGenLeverage(pi, hl, chainId, market) {
   return { leverage, accountValue, withdrawable }
 }
 
-async function readBook(pi, hl, chainId, market, mode) {
+async function readBook(hl, chainId, market, mode, address) {
   if (mode !== 'live') {
     return { position: null, paperUsdc: 1000, balanceRead: false }
-  }
-  let address = ''
-  try {
-    address = pi.preferredKeyGenAddress()
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) }
   }
   const balances = await hl.hyperliquidFetchUsdClassBalancesSummary({ chainId, executorAddress: address })
   const spot = num(balances.balances && balances.balances.spotUsdcAvailable) || 0
@@ -1268,7 +1277,7 @@ async function liveManagement(input) {
   let triggers = { stop: null, target: null }
   if (typeof input.hl.hyperliquidFetchOrdersForExecutor === 'function') {
     try {
-      const address = input.pi.preferredKeyGenAddress()
+      const address = input.address
       const fetched = await input.hl.hyperliquidFetchOrdersForExecutor({
         chainId: input.chainId,
         executorAddress: address,
