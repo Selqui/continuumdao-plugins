@@ -141,4 +141,4 @@ A backtest ledger row records `candle`, the 1-based number of that event in the 
 
 ![Decision matrix](./decision-matrix.svg)
 
-Version **v1.2.2**.
+Version **v1.2.3**.

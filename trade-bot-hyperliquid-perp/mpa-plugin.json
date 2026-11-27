@@ -1,6 +1,6 @@
 {
   "name": "trade-bot-hyperliquid-perp",
-  "version": "v1.2.2",
+  "version": "v1.2.3",
   "versionDate": "2026-11-27",
   "description": "Decides a Hyperliquid perpetual from one analysis. A clear idea opens or closes. Rules move stop or size. Dry-run and backtest are paper. Live is unsigned.\n\nasset - market name, such as BTC. Not a 0x address.\ninterval - 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 8h, 12h, 1d, 3d, 1w, 1M.\ncandleCount - at least 2.\nanalysisType - trend_structure, elliott_waves, key_levels, key_level_fibonacci, divergence, range_volatility, bollinger_bands, donchian_breakout, supertrend, ichimoku, z_score, moving_averages, chart_patterns, momentum, candlestick_patterns.\nmode - dry-run (default), backtest, live.\nmomentum - omit or on.\ncandlestick - omit or on.\npercent - default 50.\nstop-to-entry - optional XX YY. XX above 0, at most 100. YY from 0, below XX.\ntrailing-stop - optional XX YY. Both above 0, max 100. YY<XX.\nadd-to-position - optional XX YY. Each above 0, max 100.\nremove-from-position - optional XX YY. Each above 0, max 100.\nmessage - omit or on. Not backtest. One thread. Spot, PnL, and the action.\nkeygen - omit, or a KeyGen id.",
   "skills": [
