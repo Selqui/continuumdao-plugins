@@ -5,7 +5,13 @@
  * A contract address is rejected. The name does not have to be a saved node asset.
  * Analysis settings are passed in. This file does not read trade-desk.yaml.
  * It never signs and never posts a multi-sign request.
+ * Account notes share one KeyGen thread per address. The root id is kept in
+ * .position-state.json. Later notes reply to that root and do not open another.
  */
+
+import { readFile, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const CHAIN_ID = 999
 
@@ -342,6 +348,122 @@ export function spotTopUpNotice(market, leverage) {
   return `Send USDC to the KeyGen spot balance before a live trade. Leverage on ${market} is ${leverage}x. Hyperliquid will not change that leverage until spot USDC has arrived. After the USDC is on spot, ask the agent to change it.`
 }
 
+export const ACCOUNT_STATUS_TITLE = 'Hyperliquid account'
+
+export function messageRequested(value) {
+  if (asBool(value)) return true
+  if (typeof value !== 'string') return false
+  const word = value.trim().toLowerCase()
+  return word === 'on' || word === 'message'
+}
+
+export function formatUsdAmount(value) {
+  const n = num(value)
+  return (n == null ? 0 : n).toFixed(2)
+}
+
+export function formatSignedUsd(value) {
+  const n = num(value)
+  const amount = n == null ? 0 : n
+  const text = Math.abs(amount).toFixed(2)
+  if (amount > 0) return `+${text}`
+  if (amount < 0) return `-${text}`
+  return text
+}
+
+export function sumUnrealisedPnl(positions) {
+  let total = 0
+  for (const row of positions || []) {
+    const n = num(row && (row.unrealizedPnlUsd ?? row.unrealizedPnl))
+    if (n != null) total += n
+  }
+  return total
+}
+
+export function accountStatusMessage(spotUsdc, unrealisedPnlUsd) {
+  return `Spot USDC available: ${formatUsdAmount(spotUsdc)}. Unrealised PnL: ${formatSignedUsd(unrealisedPnlUsd)}.`
+}
+
+const threadIds = new Map()
+
+export function threadKey(address) {
+  return String(address || '').trim().toLowerCase()
+}
+
+export function threadStatePath() {
+  return join(dirname(dirname(fileURLToPath(import.meta.url))), '.position-state.json')
+}
+
+export function keyGenPostForThread(threadId, body) {
+  const replyTo = String(threadId || '').trim()
+  if (replyTo) return { replyTo, body }
+  return { title: ACCOUNT_STATUS_TITLE, body }
+}
+
+export function replyTargetMissing(err) {
+  const text = String(err && err.message ? err.message : err).toLowerCase()
+  return text.includes('replyto') && text.includes('not found')
+}
+
+export async function readKeyGenThreadId(file, address) {
+  const key = threadKey(address)
+  if (!key) return ''
+  if (threadIds.has(key)) return threadIds.get(key)
+  let raw = ''
+  try {
+    raw = await readFile(file, 'utf8')
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return ''
+    return ''
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return ''
+  }
+  const threads = parsed && parsed.keyGenThreads
+  const id = threads && typeof threads[key] === 'string' ? threads[key].trim() : ''
+  if (id) threadIds.set(key, id)
+  return id
+}
+
+export async function writeKeyGenThreadId(file, address, threadId) {
+  const key = threadKey(address)
+  const id = String(threadId || '').trim()
+  if (!key || !id) return { ok: false, error: 'A KeyGen thread id needs an address.' }
+  threadIds.set(key, id)
+  let parsed = {}
+  try {
+    parsed = JSON.parse(await readFile(file, 'utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) parsed = {}
+  } catch {
+    parsed = {}
+  }
+  const threads = parsed.keyGenThreads && typeof parsed.keyGenThreads === 'object' ? parsed.keyGenThreads : {}
+  threads[key] = id
+  parsed.keyGenThreads = threads
+  try {
+    await writeFile(file, `${JSON.stringify(parsed, null, 2)}\n`, 'utf8')
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export function telegramIsUnconfigured(err) {
+  const text = String(err && err.message ? err.message : err).toLowerCase()
+  return (
+    text.includes('not available') ||
+    text.includes('hooks disabled') ||
+    text.includes('environment variable') ||
+    text.includes('environment store') ||
+    text.includes('bot token') ||
+    text.includes('chat id') ||
+    (text.includes('webhook') && text.includes('not found'))
+  )
+}
+
 export const INSTANT_SETUP_NOTICE = 'Open Node => AI Agent => Cron. On the other nodes, set auto-accept-sign-request to Active and Instant. On this node, the one where you entered the command, set auto-sign-and-broadcast to Active and Instant. You may miss trades if you rely on a person, or on AI actionable agreement and broadcasting, which can be slow.'
 
 // Only the originator is visible. Pass when its auto-sign-and-broadcast job is Instant and Active.
@@ -645,7 +767,7 @@ export default async function plugin(pi) {
 
   pi.registerTool({
     name: 'perp_trade_decision',
-    description: 'Decide a Hyperliquid perpetual from a market name and one technical-analysis type. Candlestick and the other types run inside this tool, including the candlestick switch. Returns an unsigned open, close, stop update, add, or partial remove, a backtest with its trade ledger and skip summary, or does nothing. Does not draw a chart.',
+    description: 'Decide a Hyperliquid perpetual from a market name and one technical-analysis type. Candlestick and the other types run inside this tool, including the candlestick switch. When message is on, and mode is not backtest, posts spot USDC available and unrealised PnL on one KeyGen thread, and the same text to Telegram when that webhook is configured. Returns an unsigned open, close, stop update, add, or partial remove, a backtest with its trade ledger and skip summary, or does nothing. Does not draw a chart.',
     parameters: {
       asset: { type: 'string', description: 'Hyperliquid market name, such as BTC. A contract address is rejected.' },
       interval: { type: 'string', description: 'Candle interval, such as 4h.' },
@@ -659,6 +781,7 @@ export default async function plugin(pi) {
       addToPosition: { type: 'string', description: 'Two percents, such as "50 25". When the previous candle closes at least the first percent of the way from entry to target, add the second percent of the remaining free collateral once.' },
       removeFromPosition: { type: 'string', description: 'Two percents, such as "75 50". When the previous candle closes at least the first percent of the way from entry to target, close the second percent of the current position once.' },
       trailingStop: { type: 'string', description: 'Two percents, such as "50 5". When the previous candle closes at least the first percent of the way from entry to target, set the stop back from that close by the second percent of the entry-to-target range. Later closes tighten it again.' },
+      message: { type: 'boolean', description: 'When true, and mode is not backtest, at the start post spot USDC available and the unrealised PnL of open perpetuals. The first post opens one KeyGen thread. Later posts reply on that thread. The same text is sent to Telegram when that webhook is configured. Backtest does not post.' },
       lookbackDays: { type: 'number' },
       percent: { type: 'number' },
       initialBalanceUsdc: { type: 'string' },
@@ -667,9 +790,14 @@ export default async function plugin(pi) {
     },
     async execute(args) {
       const setupNotice = readInstantSetupNotice(pi)
-      const finish = (result) => (
-        setupNotice && result && typeof result === 'object' ? { ...result, setupNotice } : result
-      )
+      let accountNotice = null
+      const finish = (result) => {
+        if (!result || typeof result !== 'object') return result
+        const extra = {}
+        if (setupNotice) extra.setupNotice = setupNotice
+        if (accountNotice) Object.assign(extra, accountNotice)
+        return Object.keys(extra).length ? { ...result, ...extra } : result
+      }
       const asset = String(args.asset || '').trim()
       if (!asset) return finish({ error: 'Pass a Hyperliquid market name, such as BTC.' })
       if (isAddress(asset)) {
@@ -694,9 +822,16 @@ export default async function plugin(pi) {
       const percent = Number(args.percent) > 0 ? Number(args.percent) : 50
       const momentumOn = asBool(args.momentum)
       const candlestickOn = asBool(args.candlestick)
+      const messageOn = messageRequested(args.message)
       const parsedRules = parseManagementRules(args)
       if (parsedRules.error) return finish({ error: parsedRules.error })
       const management = parsedRules.rules
+
+      if (messageOn && mode !== 'backtest') {
+        const posted = await postAccountStatus(pi, hl, chainId)
+        if (posted.error) return finish({ error: posted.error })
+        accountNotice = posted.notice
+      }
 
       let resolved
       try {
@@ -828,6 +963,82 @@ export default async function plugin(pi) {
       })
     },
   })
+}
+
+async function sendTelegramStatus(pi, body) {
+  if (!pi || typeof pi.sendTelegram !== 'function') return { sent: false }
+  try {
+    await pi.sendTelegram(body)
+    return { sent: true }
+  } catch (err) {
+    const text = err instanceof Error ? err.message : String(err)
+    if (telegramIsUnconfigured(text)) return { sent: false }
+    return { sent: false, error: text }
+  }
+}
+
+async function postAccountStatus(pi, hl, chainId) {
+  let address = ''
+  try {
+    address = pi.preferredKeyGenAddress()
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) }
+  }
+  let balances
+  let positions
+  try {
+    const pair = await Promise.all([
+      hl.hyperliquidFetchUsdClassBalancesSummary({ chainId, executorAddress: address }),
+      hl.hyperliquidFetchPositionsForExecutor({ chainId, executorAddress: address }),
+    ])
+    balances = pair[0]
+    positions = pair[1]
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) }
+  }
+  const spot = num(balances && balances.balances && balances.balances.spotUsdcAvailable) || 0
+  const unrealised = sumUnrealisedPnl(positions && positions.positions)
+  const body = accountStatusMessage(spot, unrealised)
+  const sent = await sendAccountThread(pi, address, body)
+  if (sent.error) return sent
+  const telegram = await sendTelegramStatus(pi, body)
+  return {
+    notice: {
+      accountMessage: body,
+      ...(sent.posted && sent.posted.id ? { keyGenMessageId: sent.posted.id } : {}),
+      ...(sent.threadId ? { keyGenThreadId: sent.threadId } : {}),
+      telegramSent: telegram.sent,
+      ...(telegram.error ? { telegramError: telegram.error } : {}),
+      ...(sent.threadError ? { threadError: sent.threadError } : {}),
+    },
+  }
+}
+
+async function sendAccountThread(pi, address, body) {
+  const file = threadStatePath()
+  const rootId = await readKeyGenThreadId(file, address)
+  let posted
+  let savedRoot = rootId
+  try {
+    posted = await pi.sendKeyGenMessage(keyGenPostForThread(rootId, body))
+  } catch (err) {
+    if (!rootId || !replyTargetMissing(err)) {
+      return { error: err instanceof Error ? err.message : String(err) }
+    }
+    try {
+      posted = await pi.sendKeyGenMessage(keyGenPostForThread('', body))
+    } catch (err2) {
+      return { error: err2 instanceof Error ? err2.message : String(err2) }
+    }
+    savedRoot = ''
+  }
+  const threadId = savedRoot || (posted && posted.id) || ''
+  let threadError = ''
+  if (threadId && threadId !== rootId) {
+    const wrote = await writeKeyGenThreadId(file, address, threadId)
+    if (!wrote.ok) threadError = wrote.error || 'The KeyGen thread id was not saved.'
+  }
+  return { posted, threadId, ...(threadError ? { threadError } : {}) }
 }
 
 async function readKeyGenLeverage(pi, hl, chainId, market) {

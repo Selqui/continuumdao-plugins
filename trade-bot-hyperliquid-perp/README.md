@@ -2,6 +2,8 @@
 
 Decides a Hyperliquid perpetual from a market name, a candle window, and one technical analysis. A clear idea can open a position or close the one that is open. Optional rules can move the stop, trail it, add size, or remove size once price has moved from the entry toward the target. Dry-run and backtest use a paper balance. Live returns an unsigned payload. The plugin does not sign it and does not post it.
 
+The word `message` posts an account note before that decision on dry-run and live. The note is the spot USDC still available on the preferred KeyGen and the unrealised profit or loss of its open perpetuals. The same text goes to the KeyGen and, when a Telegram webhook is configured, to that operator chat. Backtest does not send it.
+
 The market name does not have to be saved on the node. A contract address is rejected. Periods and entry settings come from `trade-desk.yaml`. Candlestick analysis runs inside the plugin. A separate request for a chart still uses the chart tools.
 
 ## Setup
@@ -24,8 +26,46 @@ Each run checks only this node, the one where the command is entered. The check 
 - `trailing-stop` — optional `XX YY`, such as `50 5`. Each value is above 0 and at most 100, and `YY` is below `XX`, so the trigger price stays ahead of the stop. Sets the stop back from the previous close, and tightens it on later closes.
 - `add-to-position` — optional `XX YY`, such as `50 25`. Each value is above 0 and at most 100. Adds that percent of free collateral once.
 - `remove-from-position` — optional `XX YY`, such as `75 50`. Each value is above 0 and at most 100. Closes that percent of the position once. `100` closes it.
+- `message` — omit it, or include the word. On dry-run and live, the plugin posts the account note below before it fetches candles or decides. Backtest does not post.
 
 The four position rules need a target on the open position. `XX` is how far the previous candle close must travel from the entry toward that target. On a long from 10 to 20, `50` means the previous close is 15 or higher. On a short from 20 to 10, `50` means the previous close is 15 or lower.
+
+## Account message
+
+Include `message` on dry-run or live and the plugin reads the preferred KeyGen on Hyperliquid before the analysis. Backtest skips that read and does not post, even when the word is present. The decision after a dry-run or live note is unchanged: dry-run stays on paper, and live still returns an unsigned payload.
+
+The note has two figures.
+
+- **Spot USDC available** is the KeyGen spot USDC that is not on hold. That is the collateral still sitting in spot.
+- **Unrealised PnL** is the sum of unrealised profit or loss on open perpetual positions. Each position contributes its own unrealised PnL. A book with no open perpetual is `0.00`. Amounts are shown to two decimal places. A profit has a leading `+`.
+
+The text looks like this:
+
+```text
+Spot USDC available: 1250.00. Unrealised PnL: -42.18.
+```
+
+That text is the body of a KeyGen message on the preferred KeyGen, so the other nodes receive it. Saving the thread needs `user_folder:write`, which this plugin declares. This plugin keeps one thread for each KeyGen address. The first note opens it. The title of that root message is `Hyperliquid account`. Every later note is a reply to that root, with no title, so it does not open a second thread. The root id is stored in `.position-state.json` on the node and is left out of the published archive. `keyGenThreadId` is that root. `keyGenMessageId` is the note from this run. If the root message has been deleted, the next note opens a new thread and later notes reply to that one.
+
+The same body is then sent with `sendTelegram`, which uses the node's Telegram webhook when one is configured. `telegramSent` is true when that send is accepted. When no Telegram webhook is configured, the KeyGen post still stands, `telegramSent` is false, and the decision continues. A Telegram send that fails for another reason is returned as `telegramError`. That does not cancel the decision. A failed KeyGen post does. The tool returns that error and does not continue to an order.
+
+The plugin sends both. The agent should quote `accountMessage` and should not post a second copy.
+
+```text
+/trade-bot-hyperliquid-perp BTC 4h 200 supertrend message
+```
+
+`message` can sit with the other words. Live posts the note, then returns an unsigned payload when the idea calls for one:
+
+```text
+/trade-bot-hyperliquid-perp ETH 4h 200 supertrend live message
+```
+
+The same word on a backtest does not post:
+
+```text
+/trade-bot-hyperliquid-perp ETH 4h 200 supertrend backtest 50 message
+```
 
 ## Examples
 
@@ -87,4 +127,4 @@ A backtest ledger row records a stop move as `stop-to-entry` or `trailing-stop`,
 
 ![Decision matrix](./decision-matrix.svg)
 
-Version **v1.2.0**.
+Version **v1.2.1**.
