@@ -123,7 +123,7 @@ The same command can carry position rules. Words come in any order. A bare numbe
 /trade-bot-hyperliquid-perp BTC 1h 300 donchian_breakout backtest add-to-position 50 25 remove-from-position 75 50
 ```
 
-A backtest ledger row records a stop move as `stop-to-entry` or `trailing-stop`, an add as `add`, and a partial remove as `remove`. A remove of the whole position closes the trade with reason `remove`.
+A backtest ledger row records `candle`, the 1-based number of that event in the window. 1 is the oldest candle. The fill is `opened`. A stop move is `stop-to-entry` or `trailing-stop`, an add is `add`, and a partial remove is `remove`. A remove of the whole position closes the trade with reason `remove`. A position still open at the end also has a final `open` row.
 
 ![Decision matrix](./decision-matrix.svg)
 

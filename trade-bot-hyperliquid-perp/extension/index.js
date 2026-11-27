@@ -1285,10 +1285,34 @@ export async function backtest(input) {
       : 0
     return usdc + (position && qty ? margin + openPnl : 0)
   }
+  function candleNumber(barIndex) {
+    return barIndex + 1
+  }
+  function pushOpened(barIndex, pattern) {
+    const at = rows[barIndex]
+    ledger.push({
+      status: 'opened',
+      candle: candleNumber(barIndex),
+      side: position,
+      reason: 'open',
+      entryPrice: Number(entry.toFixed(6)),
+      exitPrice: null,
+      entryTimeMs: at && at.timestampMs != null ? at.timestampMs : null,
+      exitTimeMs: null,
+      barsHeld: 0,
+      qty: Number(qty.toFixed(8)),
+      margin: Number(margin.toFixed(6)),
+      pnl: 0,
+      balanceUsdc: Number(markedEquity(entry).toFixed(6)),
+      fillPrice: Number(entry.toFixed(6)),
+      ...(pattern ? { candlestickPattern: pattern } : {}),
+    })
+  }
   function pushAdjusted(reason, barIndex, extra) {
     const at = rows[barIndex]
     ledger.push({
       status: 'adjusted',
+      candle: candleNumber(barIndex),
       side: position,
       reason,
       entryPrice: Number(entry.toFixed(6)),
@@ -1319,6 +1343,7 @@ export async function backtest(input) {
     const entryPattern = openFill && openFill.candlestickPattern
     ledger.push({
       status: 'closed',
+      candle: candleNumber(exitIndex),
       side: position,
       reason,
       entryPrice: Number(entry.toFixed(6)),
@@ -1443,6 +1468,7 @@ export async function backtest(input) {
             entryTimeMs: bar.timestampMs ?? null,
             candlestickPattern: decision.candlestickPattern || null,
           }
+          pushOpened(i, openFill.candlestickPattern)
         } else if (flatAtStart) {
           noteSkip(CLEAR_ENTRY_MISSED)
         }
@@ -1467,6 +1493,7 @@ export async function backtest(input) {
       : 0
     ledger.push({
       status: 'open',
+      candle: rows.length,
       side: position,
       reason: null,
       entryPrice: Number(entry.toFixed(6)),
