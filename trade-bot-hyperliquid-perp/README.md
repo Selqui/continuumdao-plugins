@@ -45,11 +45,24 @@ The text looks like this:
 Spot USDC available: 1250.00. Unrealised PnL: -42.18.
 ```
 
-That text is the body of a KeyGen message on the preferred KeyGen, so the other nodes receive it. Saving the thread needs `user_folder:write`, which this plugin declares. This plugin keeps one thread for each KeyGen address. The first note opens it. The title of that root message is `Hyperliquid account`. Every later note is a reply to that root, with no title, so it does not open a second thread. The root id is stored in `.position-state.json` on the node and is left out of the published archive. `keyGenThreadId` is that root. `keyGenMessageId` is the note from this run. If the root message has been deleted, the next note opens a new thread and later notes reply to that one.
+That text is the body of a KeyGen message on the preferred KeyGen, so the other nodes receive it. Saving the thread needs `user_folder:write`, which this plugin declares. This plugin keeps one thread for each KeyGen address. The first note opens it. The title of that root message is `Hyperliquid account`. Every later note is a reply to that root, with no title, so it does not open a second thread. The root id is stored in `.position-state.json` on the node and is left out of the published archive. `keyGenThreadId` is that root. `keyGenMessageId` is the account note from this run. `positionMessageId` is the position reply when one was posted. If the root message has been deleted, the next note opens a new thread and later notes reply to that one.
 
-The same body is then sent with `sendTelegram`, which uses the node's Telegram webhook when one is configured. `telegramSent` is true when that send is accepted. When no Telegram webhook is configured, the KeyGen post still stands, `telegramSent` is false, and the decision continues. A Telegram send that fails for another reason is returned as `telegramError`. That does not cancel the decision. A failed KeyGen post does. The tool returns that error and does not continue to an order.
+When that run also opens, closes, or updates a position, a second note is posted on the same thread. Backtest does not post it. The note names the action and the price. An open, a close, an add, and a remove name the side and the market. A stop move names the rule and the new stop. Several actions in one run are one reply, one line each.
 
-The plugin sends both. The agent should quote `accountMessage` and should not post a second copy.
+```text
+Open long BTC at 60399.
+Close short BTC at 59676.64.
+Stop-to-entry BTC. Stop set to 60399.
+Trailing-stop BTC. Stop set to 60472.
+Add long BTC at 61101.
+Remove short BTC at 59000.
+```
+
+`positionMessage` is that text. `positionMessageId` is the reply. `accountMessage` is still the spot and PnL note.
+
+The same account body is then sent with `sendTelegram`, which uses the node's Telegram webhook when one is configured. `telegramSent` is true when that send is accepted. When no Telegram webhook is configured, the KeyGen post still stands, `telegramSent` is false, and the decision continues. A Telegram send that fails for another reason is returned as `telegramError`. That does not cancel the decision. A failed KeyGen post does. The tool returns that error and does not continue to an order.
+
+The plugin sends the account note to KeyGen and to Telegram. The position note goes to KeyGen only. The agent should quote `accountMessage` and `positionMessage`, and should not post a second copy of either.
 
 ```text
 /trade-bot-hyperliquid-perp BTC 4h 200 supertrend message

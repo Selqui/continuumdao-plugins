@@ -5,8 +5,9 @@
  * A contract address is rejected. The name does not have to be a saved node asset.
  * Analysis settings are passed in. This file does not read trade-desk.yaml.
  * It never signs and never posts a multi-sign request.
- * Account notes share one KeyGen thread per address. The root id is kept in
- * .position-state.json. Later notes reply to that root and do not open another.
+ * Account notes and position actions share one KeyGen thread per address.
+ * The root id is kept in .position-state.json. Later notes reply to that
+ * root and do not open another.
  */
 
 import { readFile, writeFile } from 'node:fs/promises'
@@ -382,6 +383,54 @@ export function sumUnrealisedPnl(positions) {
 
 export function accountStatusMessage(spotUsdc, unrealisedPnlUsd) {
   return `Spot USDC available: ${formatUsdAmount(spotUsdc)}. Unrealised PnL: ${formatSignedUsd(unrealisedPnlUsd)}.`
+}
+
+export function formatTradePrice(value) {
+  const n = num(value)
+  if (!(n > 0)) return ''
+  return n.toFixed(6).replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '')
+}
+
+const POSITION_EVENT_LINE = {
+  open: (event) => `Open ${event.side} ${event.market} at ${event.price}.`,
+  close: (event) => `Close ${event.side} ${event.market} at ${event.price}.`,
+  'stop-to-entry': (event) => `Stop-to-entry ${event.market}. Stop set to ${event.price}.`,
+  'trailing-stop': (event) => `Trailing-stop ${event.market}. Stop set to ${event.price}.`,
+  'update-stop': (event) => `Update stop ${event.market}. Stop set to ${event.price}.`,
+  add: (event) => `Add ${event.side} ${event.market} at ${event.price}.`,
+  remove: (event) => `Remove ${event.side} ${event.market} at ${event.price}.`,
+}
+
+export function positionEventMessage(events) {
+  return (events || []).map((event) => {
+    const line = POSITION_EVENT_LINE[event.action]
+    return line ? line(event) : ''
+  }).filter(Boolean).join('\n')
+}
+
+export function positionEvents(input) {
+  const market = input && input.market
+  const payload = input && input.payload
+  const actions = payload && Array.isArray(payload.actions) ? payload.actions : null
+  if (actions && actions.length) {
+    return actions.map((item) => positionEventFromAction(market, input.positionSide, item)).filter(Boolean)
+  }
+  if (input && input.decision === 'open') {
+    return [positionEventFromAction(market, input.decisionSide, { action: 'open', side: input.decisionSide, limitPxHuman: payload && payload.limitPxHuman })].filter(Boolean)
+  }
+  if (input && input.decision === 'close') {
+    const side = input.positionSide || input.decisionSide
+    return [positionEventFromAction(market, side, { action: 'close', side, limitPxHuman: payload && payload.limitPxHuman })].filter(Boolean)
+  }
+  return []
+}
+
+function positionEventFromAction(market, side, item) {
+  if (!item) return null
+  const action = item.rule || item.action
+  const price = formatTradePrice(item.stopLossTriggerPxHuman ?? item.limitPxHuman)
+  if (!action || !price || !POSITION_EVENT_LINE[action]) return null
+  return { action, market, side: item.side || side, price }
 }
 
 const threadIds = new Map()
@@ -767,7 +816,7 @@ export default async function plugin(pi) {
 
   pi.registerTool({
     name: 'perp_trade_decision',
-    description: 'Decide a Hyperliquid perpetual from a market name and one technical-analysis type. Candlestick and the other types run inside this tool, including the candlestick switch. When message is on, and mode is not backtest, posts spot USDC available and unrealised PnL on one KeyGen thread, and the same text to Telegram when that webhook is configured. Returns an unsigned open, close, stop update, add, or partial remove, a backtest with its trade ledger and skip summary, or does nothing. Does not draw a chart.',
+    description: 'Decide a Hyperliquid perpetual from a market name and one technical-analysis type. Candlestick and the other types run inside this tool, including the candlestick switch. When message is on, and mode is not backtest, posts spot USDC available and unrealised PnL on one KeyGen thread, and the same text to Telegram when that webhook is configured. An open, a close, or a rule update on that run is a reply on the same thread, with the action and the price. Returns an unsigned open, close, stop update, add, or partial remove, a backtest with its trade ledger and skip summary, or does nothing. Does not draw a chart.',
     parameters: {
       asset: { type: 'string', description: 'Hyperliquid market name, such as BTC. A contract address is rejected.' },
       interval: { type: 'string', description: 'Candle interval, such as 4h.' },
@@ -781,7 +830,7 @@ export default async function plugin(pi) {
       addToPosition: { type: 'string', description: 'Two percents, such as "50 25". When the previous candle closes at least the first percent of the way from entry to target, add the second percent of the remaining free collateral once.' },
       removeFromPosition: { type: 'string', description: 'Two percents, such as "75 50". When the previous candle closes at least the first percent of the way from entry to target, close the second percent of the current position once.' },
       trailingStop: { type: 'string', description: 'Two percents, such as "50 5". When the previous candle closes at least the first percent of the way from entry to target, set the stop back from that close by the second percent of the entry-to-target range. Later closes tighten it again.' },
-      message: { type: 'boolean', description: 'When true, and mode is not backtest, at the start post spot USDC available and the unrealised PnL of open perpetuals. The first post opens one KeyGen thread. Later posts reply on that thread. The same text is sent to Telegram when that webhook is configured. Backtest does not post.' },
+      message: { type: 'boolean', description: 'When true, and mode is not backtest, at the start post spot USDC available and the unrealised PnL of open perpetuals. The first post opens one KeyGen thread. Later posts reply on that thread. The same account text is sent to Telegram when that webhook is configured. An open, a close, or a rule update on that run is a second reply on the same thread, with the action and the price. Backtest does not post.' },
       lookbackDays: { type: 'number' },
       percent: { type: 'number' },
       initialBalanceUsdc: { type: 'string' },
@@ -944,6 +993,21 @@ export default async function plugin(pi) {
           : (price > 0 ? notional / price : 0)
         payload = orderPayload(decision.decision, market, decision.side, price, size, resolved.szDecimals)
       }
+      if (messageOn) {
+        const events = positionEvents({
+          market,
+          positionSide: book.position,
+          decisionSide: decision.side,
+          decision: liveDecision,
+          payload,
+        })
+        const body = positionEventMessage(events)
+        if (body) {
+          const posted = await postPositionNote(pi, body)
+          if (posted.error) return finish({ error: posted.error })
+          accountNotice = { ...(accountNotice || {}), ...posted.notice }
+        }
+      }
       return finish({
         mode,
         decision: liveDecision,
@@ -1009,6 +1073,25 @@ async function postAccountStatus(pi, hl, chainId) {
       ...(sent.threadId ? { keyGenThreadId: sent.threadId } : {}),
       telegramSent: telegram.sent,
       ...(telegram.error ? { telegramError: telegram.error } : {}),
+      ...(sent.threadError ? { threadError: sent.threadError } : {}),
+    },
+  }
+}
+
+async function postPositionNote(pi, body) {
+  let address = ''
+  try {
+    address = pi.preferredKeyGenAddress()
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) }
+  }
+  const sent = await sendAccountThread(pi, address, body)
+  if (sent.error) return sent
+  return {
+    notice: {
+      positionMessage: body,
+      ...(sent.posted && sent.posted.id ? { positionMessageId: sent.posted.id } : {}),
+      ...(sent.threadId ? { keyGenThreadId: sent.threadId } : {}),
       ...(sent.threadError ? { threadError: sent.threadError } : {}),
     },
   }
@@ -1120,9 +1203,11 @@ function managementActions(planned, coin, side, szDecimals) {
   const stopPx = planned.trailChange != null ? planned.trailChange : planned.stopChange
   if (stopPx != null) {
     const stopLossTriggerPxHuman = roundTo(stopPx, 6)
+    const rule = planned.trailChange != null ? 'trailing-stop' : 'stop-to-entry'
     actions.push(managementAction({
       kind: 'hyperliquid-perp',
       action: 'update-stop',
+      rule,
       tool: 'ctm_hyperliquid_build_update_position_tpsl_multisign',
       coin,
       side,
